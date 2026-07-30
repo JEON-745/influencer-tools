@@ -16,6 +16,41 @@ from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="인플루언서 서칭 대시보드", layout="wide")
 
+st.markdown("""
+<style>
+    section[data-testid="stSidebar"] {
+        background-color: #FFFFFF;
+        border-right: 1px solid #E6E6EA;
+    }
+    section[data-testid="stSidebar"] label {
+        font-size: 14px;
+    }
+    div[data-testid="stMetric"] {
+        background-color: #FFFFFF;
+        border: 1px solid #E6E6EA;
+        border-radius: 12px;
+        padding: 14px 16px;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 24px;
+        font-weight: 700;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 12px !important;
+    }
+    .stButton > button[kind="primary"] {
+        background-color: #5B4FE0;
+        border-color: #5B4FE0;
+    }
+    div[data-testid="stAlert"] {
+        border-radius: 10px;
+    }
+    h1, h2, h3 {
+        color: #18181B;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 YOUTUBE_API_KEY = st.secrets.get("YOUTUBE_API_KEY", "")
 YOUTUBE_BASE = "https://www.googleapis.com/youtube/v3"
 
