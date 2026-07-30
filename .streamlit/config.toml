@@ -1,1 +1,8 @@
 
+[theme]
+   primaryColor = "#5B4FE0"
+   backgroundColor = "#F6F6F8"
+   secondaryBackgroundColor = "#FFFFFF"
+   textColor = "#18181B"
+   font = "sans serif"
+   baseRadius = "medium"
