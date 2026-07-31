@@ -32,7 +32,7 @@ const YOUTUBE_API_KEY = "AIzaSyBYEKJz9QHyT0DRwQkQzmAOYu9jbYyKb1E";
 // 4. "사용자 인증 정보" → "+ 사용자 인증 정보 만들기" → "OAuth 클라이언트 ID" → 유형 "웹 애플리케이션"
 // 5. "승인된 자바스크립트 원본"에 GitHub Pages 주소 추가 (예: https://jeon-745.github.io)
 // 6. 발급된 클라이언트 ID를 아래에 붙여넣기
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "1005084040906-7dnven36ta4pv6rqf7ebcmlthl257m80.apps.googleusercontent.com";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"; // 읽기 전용 — 발송/삭제 권한 없음
 
 // 채널명+설명(bio)에서 주력 콘텐츠 유형을 키워드 기반으로 추론 (실제 영상 콘텐츠 분석이 아닌 근사치)
@@ -1247,6 +1247,59 @@ async function exportToExcel(rows, title) {
   URL.revokeObjectURL(url);
 }
 
+function escapeHtml(str) {
+  return String(str || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function loadGmailThreads(email) {
+  state.gmailLoading = email;
+  renderDrawer();
+  try {
+    const messages = await fetchGmailThreadsFor(email);
+    state.gmailThreadsCache[email] = { messages };
+  } catch (e) {
+    state.gmailThreadsCache[email] = { messages: [], error: e.message };
+  }
+  state.gmailLoading = null;
+  renderDrawer();
+}
+
+// 상세 드로어 안에 표시되는 "이 크리에이터와의 메일 기록" 섹션
+function gmailSectionHtml(email) {
+  const connected = Boolean(state.gmailToken);
+  const cached = state.gmailThreadsCache[email];
+  const loading = state.gmailLoading === email;
+
+  let body;
+  if (loading) {
+    body = `<div style="font-size:12px;color:#A3A3AD;padding:10px 0;">불러오는 중...</div>`;
+  } else if (!connected) {
+    body = `<button data-gmail-load="${escapeHtml(email)}" style="width:100%;padding:10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:600;cursor:pointer;">📧 Gmail 연결하고 메일 기록 보기</button>`;
+  } else if (!cached) {
+    body = `<button data-gmail-load="${escapeHtml(email)}" style="width:100%;padding:10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:600;cursor:pointer;">메일 기록 불러오기</button>`;
+  } else if (cached.error) {
+    body = `<div style="font-size:12px;color:#D93B3B;">메일을 불러오지 못했어요: ${escapeHtml(cached.error)}</div>
+            <button data-gmail-load="${escapeHtml(email)}" style="margin-top:8px;padding:8px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;cursor:pointer;">다시 시도</button>`;
+  } else if (!cached.messages.length) {
+    body = `<div style="font-size:12px;color:#A3A3AD;">이 이메일과 주고받은 메일이 아직 없어요.</div>`;
+  } else {
+    body = cached.messages.map(m => `
+      <div style="padding:10px 12px;border:1px solid #E6E6EA;border-radius:8px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.subject)}</div>
+          <div style="font-size:11px;color:#A3A3AD;white-space:nowrap;">${m.date.toLocaleDateString("ko-KR")}</div>
+        </div>
+        <div style="font-size:11px;color:#6D6D76;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.snippet)}</div>
+      </div>`).join("");
+  }
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div style="font-size:12px;font-weight:600;color:#6D6D76;">이 크리에이터와의 메일 기록${connected ? "" : " (Gmail 연결 필요)"}</div>
+      ${body}
+    </div>`;
+}
+
 function renderDrawer() {
   const drawerRoot = document.getElementById("drawer");
   if (!state.selectedId) { drawerRoot.innerHTML = ""; return; }
@@ -1384,6 +1437,17 @@ function renderDrawer() {
       window.location.href = `mailto:${d.email}?subject=${subject}&body=${body}`;
     };
   }
+
+  document.querySelectorAll("[data-gmail-load]").forEach(btn => {
+    btn.onclick = () => {
+      const email = btn.dataset.gmailLoad;
+      if (!state.gmailToken) {
+        connectGoogle(() => loadGmailThreads(email));
+        return;
+      }
+      loadGmailThreads(email);
+    };
+  });
 
   document.getElementById("drawer-exclude").onclick = () => {
     if (confirm(`"${d.title}"을(를) 후보에서 제외할까요? 목록에서 삭제됩니다.`)) {
