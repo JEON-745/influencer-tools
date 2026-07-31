@@ -1,0 +1,1776 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>인플루언서 서칭 대시보드</title>
+</head>
+<body>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  .af-range { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; outline: none; cursor: pointer; }
+  .af-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #5B4FE0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+  .af-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #5B4FE0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
+  .af-range::-moz-range-track { height: 6px; border-radius: 999px; background: transparent; }
+</style>
+<div id="app" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #18181B; background:#F6F6F8; padding:16px; border-radius:16px; position:relative;"></div>
+<div id="drawer"></div>
+<div id="export-modal"></div>
+<div id="save-list-modal"></div>
+<script>
+// ⚠️ 아래에 실제 유튜브 API 키를 입력하세요. 이 파일은 외부(카카오톡, 이메일 등)로 공유하지 마세요 —
+// 키가 코드 안에 그대로 노출됩니다. 내부 전용으로만 사용하세요.
+const YOUTUBE_API_KEY = "AIzaSyBYEKJz9QHyT0DRwQkQzmAOYu9jbYyKb1E";
+
+// ⚠️ 구글 로그인용 OAuth 클라이언트 ID. 아래 안내대로 발급받아 넣어주세요.
+// (이 값은 유튜브 API 키와 달리 공개되어도 안전하게 설계된 값입니다 — 걱정 안 하셔도 돼요)
+// 1. https://console.cloud.google.com → 기존 유튜브 프로젝트 선택
+// 2. "API 및 서비스" → "라이브러리" → "Gmail API" 검색 → 사용 설정
+// 3. "API 및 서비스" → "OAuth 동의 화면" → 사용자 유형 "외부" → 앱 이름/이메일만 입력하고 저장
+// 4. "사용자 인증 정보" → "+ 사용자 인증 정보 만들기" → "OAuth 클라이언트 ID" → 유형 "웹 애플리케이션"
+// 5. "승인된 자바스크립트 원본"에 GitHub Pages 주소 추가 (예: https://jeon-745.github.io)
+// 6. 발급된 클라이언트 ID를 아래에 붙여넣기
+const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"; // 읽기 전용 — 발송/삭제 권한 없음
+
+// 채널명+설명(bio)에서 주력 콘텐츠 유형을 키워드 기반으로 추론 (실제 영상 콘텐츠 분석이 아닌 근사치)
+const CONTENT_TYPE_KEYWORDS = {
+  "뷰티": ["뷰티", "화장품", "코스메틱", "뷰티템", "beauty"],
+  "메이크업": ["메이크업", "화장법", "파운데이션", "아이섀도", "makeup"],
+  "스킨케어": ["스킨케어", "피부관리", "클렌징", "세럼", "스킨"],
+  "패션": ["패션", "스타일링", "코디", "ootd", "옷"],
+  "데일리룩": ["데일리룩", "룩북", "데일리"],
+  "브이로그": ["브이로그", "vlog", "일상"],
+  "건강": ["건강", "웰빙", "웰에이징", "다이어트"],
+  "리빙": ["리빙", "살림", "인테리어", "정리"],
+  "푸드": ["푸드", "먹방", "맛집"],
+  "게임": ["게임", "겜", "플레이", "gaming"],
+  "e스포츠": ["e스포츠", "esports", "롤", "발로란트"],
+  "요리": ["요리", "레시피", "쿠킹", "cooking"],
+  "베이킹": ["베이킹", "제빵", "빵"],
+  "여행": ["여행", "트래블", "travel"],
+  "캠핑": ["캠핑", "차박", "camping"],
+  "육아": ["육아", "아기", "육아템", "맘"],
+  "반려동물": ["반려동물", "강아지", "고양이", "펫"],
+  "운동/헬스": ["운동", "헬스", "홈트", "필라테스", "요가"],
+};
+
+function inferContentType(title, description) {
+  const text = `${title || ""} ${description || ""}`.toLowerCase();
+  const scores = [];
+  for (const [tag, keywords] of Object.entries(CONTENT_TYPE_KEYWORDS)) {
+    const score = keywords.reduce((sum, kw) => sum + (text.includes(kw.toLowerCase()) ? 1 : 0), 0);
+    if (score > 0) scores.push([tag, score]);
+  }
+  scores.sort((a, b) => b[1] - a[1]);
+  const top = scores.slice(0, 2).map(s => s[0]);
+  return top.length ? top.join("+") : null;
+}
+
+// 타겟층 추정용 키워드 (텍스트 패턴 인식 — 실제 시청자 데이터 기반 아님)
+const AUDIENCE_KEYWORDS = [
+  { label: "20대", keywords: ["20대", "이십대"] },
+  { label: "30대", keywords: ["30대", "삼십대"] },
+  { label: "40대 이상", keywords: ["40대", "50대", "중년", "웰에이징", "안티에이징"] },
+  { label: "직장인", keywords: ["직장인", "회사원", "오피스"] },
+  { label: "대학생", keywords: ["대학생", "캠퍼스"] },
+  { label: "주부/엄마", keywords: ["주부", "엄마", "육아맘", "워킹맘"] },
+  { label: "남성", keywords: ["남자", "남성", "그루밍"] },
+  { label: "여성", keywords: ["여자", "여성", "언니", "누나"] },
+  { label: "커플", keywords: ["커플", "연인"] },
+];
+
+function inferAudience(title, description) {
+  const text = `${title || ""} ${description || ""}`.toLowerCase();
+  const found = AUDIENCE_KEYWORDS.filter(a => a.keywords.some(kw => text.includes(kw.toLowerCase())));
+  return found.map(a => a.label);
+}
+
+function subscriberTier(subs) {
+  if (subs == null) return "";
+  if (subs < 10000) return "마이크로 인플루언서(1만 미만)";
+  if (subs < 100000) return "미드티어(1만~10만)";
+  if (subs < 500000) return "매크로(10만~50만)";
+  return "메가 인플루언서(50만 이상)";
+}
+
+// 채널명/설명/최근 영상 제목에서 콘텐츠 성격과 타겟층을 패턴 인식으로 요약 (실제 영상 시청 기반 분석 아님, 참고용)
+function generateFeatures(d) {
+  const parts = [];
+
+  const mix = d.category_mix;
+  if (mix && Object.keys(mix).length) {
+    const sorted = Object.entries(mix).sort((a, b) => b[1] - a[1]).slice(0, 3);
+    parts.push(`최근 업로드는 ${sorted.map(([tag, pct]) => `${tag} ${pct}%`).join(", ")} 비중으로 구성돼 있어요.`);
+  } else if (d.content_type) {
+    parts.push(`주로 ${d.content_type.replace(/\+/g, ", ")} 콘텐츠를 업로드해요.`);
+  } else {
+    parts.push("채널명/소개글만으로는 주력 콘텐츠를 특정하기 어려워요.");
+  }
+
+  const audience = inferAudience(d.title, d.description);
+  if (audience.length) {
+    parts.push(`설명에 언급된 내용으로 볼 때 ${audience.join(", ")} 타겟으로 보여요.`);
+  }
+
+  const tier = subscriberTier(d.subscriber_count);
+  if (tier) parts.push(`구독자 규모는 ${tier}예요.`);
+
+  return parts.join(" ");
+}
+
+let DATA = [{"channel_id": "UCKycl5tLdiOz6CMoRMpXNjA", "platform": "youtube", "title": "호호뷰티", "description": "한 계단씩 성장하는 뷰티 크리에이터, 호호뷰티입니다🩷", "thumbnail_url": "https://yt3.ggpht.com/8768EClDhKqYOAxhdMDs1XSrUQNaIjdf9nmJS76MHfONVNRyJXAixjAlaxpcvL4Upu-Xh2Qv=s240-c-k-c0x00ffffff-no-rj", "country": null, "subscriber_count": 76100, "view_count": 93590303, "video_count": 1029, "engagement_rate_pct": 1.27, "healthy_account": false, "email": null, "instagram_handle": null, "keyword": "뷰티 크리에이터", "searched_at": "2026-07-29T05:51:47.154398+00:00", "category": null}];
+// 목업 데이터는 카테고리를 title/description에서 유추 (실제 서비스에서는 keyword 필드를 그대로 사용)
+DATA.forEach(d => {
+  if (!d.category) d.category = d.keyword || "기타";
+  if (!d.content_type) d.content_type = inferContentType(d.title, d.description);
+  if (!d.category_mix) d.category_mix = { [d.category]: 100 };
+  d.features = generateFeatures(d);
+});
+// 카테고리 선택지는 고정 목록 사용 (검색 결과에 따라 목록이 줄었다 늘었다 하지 않도록)
+const CATEGORY_LIST = ["뷰티", "메이크업", "스킨케어", "패션", "데일리룩", "게임", "e스포츠", "요리", "베이킹", "여행", "캠핑", "육아", "반려동물", "운동/헬스"];
+
+// 유튜브 쪽에 인스타 핸들이 적혀있으면 인스타 계정도 DATA에 있는지로 교차 플랫폼 판별
+// (DATA가 바뀔 때마다 다시 호출해야 함 — 최초 로드 시, 실시간 검색 병합 후, localStorage 로드 후)
+function computeCrossPlatform() {
+  const igHandlesFromYt = new Set(DATA.filter(d => d.platform === "youtube" && d.instagram_handle).map(d => d.instagram_handle));
+  DATA.forEach(d => {
+    d.cross_platform = d.platform === "youtube"
+      ? Boolean(d.instagram_handle)
+      : igHandlesFromYt.has(d.title);
+  });
+}
+computeCrossPlatform();
+
+// ===== 로컬 저장 (브라우저에 데이터 보관 — 새로고침/재접속해도 검색 결과·저장한 리스트·히스토리 유지) =====
+const STORAGE_KEY = "influencer_tools_state_v1";
+
+function saveToLocalStorage() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      data: DATA,
+      savedLists: SAVED_LISTS,
+      history: HISTORY_ITEMS,
+      savedAt: new Date().toISOString(),
+    }));
+  } catch (e) {
+    console.warn("로컬 저장 실패:", e);
+  }
+}
+
+function loadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed.data)) DATA = parsed.data;
+    if (Array.isArray(parsed.savedLists)) SAVED_LISTS = parsed.savedLists;
+    if (Array.isArray(parsed.history)) HISTORY_ITEMS = parsed.history;
+    return true;
+  } catch (e) {
+    console.warn("로컬 데이터 불러오기 실패:", e);
+    return false;
+  }
+}
+
+const AVATAR_COLORS = ["c-purple", "c-teal", "c-coral", "c-pink", "c-blue", "c-green", "c-amber"];
+// ===== 실시간 유튜브 검색 (브라우저에서 직접 YouTube Data API 호출) =====
+const YT_EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+const YT_INSTAGRAM_RE = /instagram\.com\/([a-zA-Z0-9._]+)/;
+const YT_HANGUL_RE = /[\uac00-\ud7a3]/g;
+
+function ytIsKorean(title, description, country) {
+  if (country === "KR") return true;
+  const text = `${title} ${description}`;
+  if (!text.trim()) return false;
+  const hangulCount = (text.match(YT_HANGUL_RE) || []).length;
+  return hangulCount / text.length >= 0.15;
+}
+
+function ytIsHealthy(subs, commentReactivity) {
+  // 댓글 반응도는 좋아요를 포함한 참여율보다 훨씬 낮은 비율로 나타나므로 기준치를 별도로 설정
+  const threshold = subs <= 10000 ? 0.5 : subs <= 100000 ? 0.25 : 0.1;
+  return commentReactivity >= threshold;
+}
+
+function ytIsRecentlyActive(videos, days = 30) {
+  if (!videos.length || !videos[0].publishedAt) return false;
+  const latest = new Date(videos[0].publishedAt);
+  return (Date.now() - latest.getTime()) <= days * 24 * 60 * 60 * 1000;
+}
+
+async function ytFetch(endpoint, params) {
+  const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  url.searchParams.set("key", YOUTUBE_API_KEY);
+  const res = await fetch(url);
+  const json = await res.json();
+  if (!res.ok) {
+    const msg = json?.error?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+// ===== 구글 로그인 (Gmail 읽기 전용) =====
+function connectGoogle(onConnected) {
+  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com") {
+    alert("아직 구글 로그인이 설정되지 않았어요. 코드 상단의 GOOGLE_CLIENT_ID를 채워주세요.");
+    return;
+  }
+  if (typeof google === "undefined" || !google.accounts) {
+    alert("구글 로그인 스크립트를 아직 못 불러왔어요. 잠시 후 다시 시도해주세요.");
+    return;
+  }
+  if (!state.gmailTokenClient) {
+    state.gmailTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: GMAIL_SCOPE,
+      callback: async (resp) => {
+        if (resp.error) { alert("구글 로그인 실패: " + resp.error); return; }
+        state.gmailToken = resp.access_token;
+        try {
+          const profile = await gmailFetch("profile");
+          state.gmailAccountEmail = profile.emailAddress;
+        } catch (e) { /* 이메일 표시는 실패해도 토큰은 유효할 수 있음 */ }
+        render();
+        if (onConnected) onConnected();
+      },
+    });
+  }
+  state.gmailTokenClient.requestAccessToken();
+}
+
+function disconnectGoogle() {
+  if (state.gmailToken && typeof google !== "undefined") {
+    google.accounts.oauth2.revoke(state.gmailToken, () => {});
+  }
+  state.gmailToken = null;
+  state.gmailAccountEmail = null;
+  render();
+}
+
+async function gmailFetch(path, params) {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`);
+  if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${state.gmailToken}` } });
+  const json = await res.json();
+  if (!res.ok) {
+    const msg = json?.error?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+function gmailHeader(headers, name) {
+  const h = (headers || []).find(x => x.name.toLowerCase() === name.toLowerCase());
+  return h ? h.value : "";
+}
+
+// 특정 이메일 주소와 주고받은 최근 메일(최대 10건)의 제목/날짜/미리보기를 가져옴
+async function fetchGmailThreadsFor(email) {
+  const listData = await gmailFetch("messages", { q: `from:${email} OR to:${email}`, maxResults: 10 });
+  const ids = (listData.messages || []).map(m => m.id);
+  const messages = [];
+  for (const id of ids) {
+    const msg = await gmailFetch(`messages/${id}`, { format: "metadata", metadataHeaders: "Subject" });
+    messages.push({
+      id: msg.id,
+      threadId: msg.threadId,
+      subject: gmailHeader(msg.payload.headers, "Subject") || "(제목 없음)",
+      snippet: msg.snippet || "",
+      date: new Date(Number(msg.internalDate)),
+    });
+  }
+  messages.sort((a, b) => b.date - a.date);
+  return messages;
+}
+
+async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, targetCount, onStatus) {
+  const results = [];
+  let pageToken = undefined;
+  const MAX_PAGES = 15; // 안전장치: 쿼터 남용 방지 (페이지당 검색 100유닛 소모, 15페이지 = 최대 750건 후보 탐색)
+  let pagesUsed = 0;
+  let exhausted = false; // true면 유튜브가 더 내놓을 채널이 없어서 멈춘 것 (페이지 한도 때문이 아님)
+
+  for (let page = 0; page < MAX_PAGES && results.length < targetCount; page++) {
+    pagesUsed = page + 1;
+    onStatus?.(`"${keyword}" 채널 검색 중... (${results.length}/${targetCount}건 확보, ${pagesUsed}페이지째)`);
+
+    const searchParams = {
+      q: keyword, type: "channel", part: "snippet", maxResults: 50,
+      relevanceLanguage: "ko", regionCode: "KR",
+    };
+    if (pageToken) searchParams.pageToken = pageToken;
+
+    const searchData = await ytFetch("search", searchParams);
+    const channelIds = [...new Set((searchData.items || []).map(it => it.snippet.channelId))];
+    pageToken = searchData.nextPageToken;
+
+    if (!channelIds.length) { exhausted = true; break; }
+
+    onStatus?.(`"${keyword}" — 채널 ${channelIds.length}개 상세정보 조회 중... (${results.length}/${targetCount}건 확보)`);
+    const channelsData = await ytFetch("channels", {
+      id: channelIds.join(","), part: "snippet,statistics,contentDetails",
+    });
+
+    for (const item of channelsData.items || []) {
+      if (results.length >= targetCount) break;
+
+      const snippet = item.snippet;
+      const description = snippet.description || "";
+      const subs = Number(item.statistics.subscriberCount || 0);
+      const country = snippet.country || null;
+
+      if (subs < minSubs || subs > maxSubs) continue;
+      if (!ytIsKorean(snippet.title, description, country)) continue;
+
+      const uploadsPlaylist = item.contentDetails.relatedPlaylists.uploads;
+      let videos = [];
+      try {
+        const plData = await ytFetch("playlistItems", {
+          playlistId: uploadsPlaylist, part: "contentDetails", maxResults: 8,
+        });
+        videos = (plData.items || []).map(v => ({
+          videoId: v.contentDetails.videoId,
+          publishedAt: v.contentDetails.videoPublishedAt,
+        }));
+      } catch (e) { /* 업로드 영상이 없는 채널일 수 있음 */ }
+
+      if (!ytIsRecentlyActive(videos, 90)) continue; // 실시간 검색은 90일 기준으로 완화
+
+      let commentReactivity = 0;
+      let categoryMix = null;
+      let recentVideos = [];
+      if (videos.length) {
+        const videosData = await ytFetch("videos", {
+          id: videos.map(v => v.videoId).join(","), part: "statistics,snippet",
+        });
+        const items = videosData.items || [];
+        const rates = items.map(v => {
+          const comments = Number(v.statistics.commentCount || 0);
+          return subs > 0 ? (comments / subs) * 100 : 0;
+        });
+        if (rates.length) commentReactivity = Math.round((rates.reduce((a, b) => a + b, 0) / rates.length) * 1000) / 1000;
+
+        // 최근 영상 썸네일/제목 (드로어의 "최근 콘텐츠" 미리보기용, 최대 4개)
+        recentVideos = items.slice(0, 4).map(v => ({
+          videoId: v.id,
+          title: v.snippet?.title || "",
+          thumbnail: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
+        }));
+
+        // 최근 영상 제목들을 키워드로 분류해서 채널의 콘텐츠 비중을 근사 계산
+        // (실제 영상 내용을 시청/분석한 게 아니라 제목 텍스트 기반 근사치입니다)
+        const tagCounts = {};
+        for (const v of items) {
+          const vTitle = (v.snippet?.title || "").toLowerCase();
+          for (const [tag, keywords] of Object.entries(CONTENT_TYPE_KEYWORDS)) {
+            if (keywords.some(kw => vTitle.includes(kw.toLowerCase()))) {
+              tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+            }
+          }
+        }
+        const totalTagged = Object.values(tagCounts).reduce((a, b) => a + b, 0);
+        if (totalTagged > 0) {
+          categoryMix = {};
+          for (const [tag, cnt] of Object.entries(tagCounts)) {
+            categoryMix[tag] = Math.round((cnt / totalTagged) * 100);
+          }
+        }
+      }
+
+      if (commentReactivity < minEngagement) continue;
+
+      const emailMatch = description.match(YT_EMAIL_RE);
+      const igMatch = description.match(YT_INSTAGRAM_RE);
+
+      const newEntry = {
+        channel_id: item.id,
+        platform: "youtube",
+        title: snippet.title,
+        description,
+        thumbnail_url: snippet.thumbnails?.medium?.url || "",
+        country,
+        subscriber_count: subs,
+        view_count: Number(item.statistics.viewCount || 0),
+        video_count: Number(item.statistics.videoCount || 0),
+        engagement_rate_pct: commentReactivity,
+        healthy_account: ytIsHealthy(subs, commentReactivity),
+        email: emailMatch ? emailMatch[0] : null,
+        instagram_handle: igMatch ? igMatch[1] : null,
+        content_type: inferContentType(snippet.title, description),
+        category_mix: categoryMix || { [keyword]: 100 },
+        recent_videos: recentVideos,
+        keyword,
+        category: keyword,
+        searched_at: new Date().toISOString(),
+      };
+      newEntry.features = generateFeatures(newEntry);
+      results.push(newEntry);
+    }
+
+    if (!pageToken) { exhausted = true; break; } // 더 이상 다음 페이지 없음
+  }
+
+  if (!results.length) {
+    onStatus?.(`"${keyword}" 검색 결과가 없어요.`);
+  } else if (results.length < targetCount) {
+    const reason = exhausted
+      ? `유튜브에 "${keyword}"로 검색되는 채널을 ${pagesUsed}페이지까지 다 훑었지만, 조건(구독자 범위·댓글 반응도·최근활동·한국어)에 맞는 채널이 ${results.length}개뿐이었어요.`
+      : `페이지 탐색 한도(${MAX_PAGES}페이지)에 도달해서 ${results.length}개까지만 모았어요. 더 찾고 싶으면 조회를 다시 눌러 이어서 검색해보세요.`;
+    onStatus?.(reason);
+  }
+  return results;
+}
+
+function mergeIntoData(newResults) {
+  const existingIds = new Set(newResults.map(r => r.channel_id));
+  for (let i = DATA.length - 1; i >= 0; i--) {
+    if (existingIds.has(DATA[i].channel_id)) DATA.splice(i, 1);
+  }
+  DATA.unshift(...newResults);
+  computeCrossPlatform();
+}
+
+// "조회하기" 버튼 클릭 시 실행 — 선택한 카테고리를 검색어 삼아 유튜브에 실시간으로 검색하고,
+// 결과를 DATA에 합친 뒤 팔로워/댓글 반응도 등 나머지 조건으로 필터링합니다.
+async function performQuery() {
+  applyFilters();
+
+  const hasKey = YOUTUBE_API_KEY && YOUTUBE_API_KEY !== "YOUR_YOUTUBE_API_KEY";
+  const shouldFetchYoutube = hasKey && applied.platforms.has("youtube") && state.categories.size > 0;
+
+  if (!shouldFetchYoutube) {
+    if (applied.platforms.has("youtube") && state.categories.size === 0) {
+      state.queryStatus = hasKey
+        ? "카테고리를 1개 이상 선택하면 유튜브에서 실시간으로 검색합니다. (지금은 보유 데이터만 필터링)"
+        : "⚠️ 코드 상단의 YOUTUBE_API_KEY를 설정하면 실시간 검색이 가능해요. (지금은 보유 데이터만 필터링)";
+    } else {
+      state.queryStatus = "";
+    }
+    render();
+    return;
+  }
+
+  state.querying = true;
+  render();
+
+  try {
+    const targetCount = state.limit || 100; // "전체"(null)인 경우 안전하게 100건까지
+    const shortfallNotes = [];
+    let totalNewResults = 0;
+    for (const category of state.categories) {
+      let lastMsg = "";
+      const results = await fetchYoutubeByKeyword(
+        category, state.minSubs, state.maxSubs, state.minEngagement, targetCount,
+        (msg) => { lastMsg = msg; state.queryStatus = msg; render(); }
+      );
+      if (results.length < targetCount && lastMsg) shortfallNotes.push(lastMsg);
+      mergeIntoData(results);
+      totalNewResults += results.length;
+    }
+    state.queryStatus = `실시간 검색 완료 (보유 데이터 총 ${DATA.length}건)` +
+      (shortfallNotes.length ? " · " + shortfallNotes.join(" / ") : "");
+
+    const now = new Date();
+    HISTORY_ITEMS.unshift({
+      categories: [...state.categories],
+      platforms: [...state.platforms],
+      minSubs: state.minSubs,
+      maxSubs: state.maxSubs,
+      minEngagement: state.minEngagement,
+      resultCount: totalNewResults,
+      when: `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, "0")}.${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+    });
+    saveToLocalStorage();
+  } catch (err) {
+    state.queryStatus = `⚠️ 검색 실패: ${err.message}`;
+  }
+
+  state.querying = false;
+  applyFilters();
+  render();
+}
+
+function avatarColor(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+const RAMP_HEX = {
+  "c-purple": ["#EEEDFE", "#3C3489"], "c-teal": ["#E1F5EE", "#085041"],
+  "c-coral": ["#FAECE7", "#712B13"], "c-pink": ["#FBEAF0", "#72243E"],
+  "c-blue": ["#E6F1FB", "#0C447C"], "c-green": ["#EAF3DE", "#27500A"],
+  "c-amber": ["#FAEEDA", "#633806"],
+};
+
+let exportModal = { open: false, rows: null, defaultTitle: "" };
+let saveListModal = { open: false, rows: null, mode: "new" };
+
+let state = {
+  gmailToken: null,
+  gmailAccountEmail: null,
+  gmailTokenClient: null,
+  gmailThreadsCache: {},
+  gmailLoading: false,
+  querying: false,
+  queryStatus: "",
+  activeTab: "search",
+  selectedId: null,
+  savedListDetailIdx: null,
+  listMenuOpenIdx: null,
+  platforms: new Set(["youtube", "instagram"]),
+  categories: new Set(),
+  categoryPercents: {},
+  categoryOpen: false,
+  minSubs: 0,
+  maxSubs: 500000,
+  minEngagement: 0,
+  healthyOnly: false,
+  emailOnly: false,
+  limit: 20,
+  sortKey: "engagement_rate_pct",
+  sortDir: "desc",
+};
+
+// 실제 조회에 사용되는 값 — "조회" 버튼을 눌러야만 state(입력 중인 값)에서 복사됨
+let applied = {
+  platforms: new Set(state.platforms),
+  categories: new Set(state.categories),
+  categoryPercents: { ...state.categoryPercents },
+  minSubs: state.minSubs,
+  maxSubs: state.maxSubs,
+  minEngagement: state.minEngagement,
+  limit: state.limit,
+};
+
+function applyFilters() {
+  applied = {
+    platforms: new Set(state.platforms),
+    categories: new Set(state.categories),
+    categoryPercents: { ...state.categoryPercents },
+    minSubs: state.minSubs,
+    maxSubs: state.maxSubs,
+    minEngagement: state.minEngagement,
+    limit: state.limit,
+  };
+}
+
+const NAV_ITEMS = [
+  { id: "search", label: "인플루언서 검색" },
+  { id: "saved", label: "저장한 리스트" },
+  { id: "history", label: "검색 히스토리" },
+];
+
+function formatNumber(n) {
+  if (n >= 10000) return (n / 10000).toFixed(1) + "만";
+  return n.toLocaleString();
+}
+
+function sortRows(rows) {
+  const dir = state.sortDir === "asc" ? 1 : -1;
+  const k = state.sortKey;
+  return [...rows].sort((a, b) => (a[k] > b[k] ? dir : a[k] < b[k] ? -dir : 0));
+}
+
+// 선택한 카테고리가 여러 개일 때, 정렬 상위권을 한 카테고리가 독식하지 않도록
+// 카테고리별로 돌아가며 채운 뒤 다시 정렬해서 보여줌
+function balancedSlice(rows, limit) {
+  if (!limit || rows.length <= limit) return rows;
+
+  const groups = new Map();
+  const order = [];
+  for (const r of rows) {
+    const key = r.category || "기타";
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(r);
+  }
+
+  const picked = [];
+  let idx = 0;
+  while (picked.length < limit) {
+    let addedAny = false;
+    for (const key of order) {
+      if (picked.length >= limit) break;
+      const g = groups.get(key);
+      if (idx < g.length) { picked.push(g[idx]); addedAny = true; }
+    }
+    if (!addedAny) break;
+    idx++;
+  }
+  return sortRows(picked);
+}
+
+function getFiltered() {
+  const bothSelected = applied.platforms.has("youtube") && applied.platforms.has("instagram");
+  const percentEntries = Object.entries(applied.categoryPercents || {}).filter(([cat, pct]) => applied.categories.has(cat) && pct > 0);
+
+  function baseMatch(d) {
+    if (applied.platforms.size === 0) return false;
+    if (bothSelected) {
+      if (!d.cross_platform) return false;
+    } else if (!applied.platforms.has(d.platform)) {
+      return false;
+    }
+    if (d.subscriber_count < applied.minSubs || d.subscriber_count > applied.maxSubs) return false;
+    if (d.engagement_rate_pct < applied.minEngagement) return false;
+    if (state.healthyOnly && !d.healthy_account) return false;
+    if (state.emailOnly && !d.email) return false;
+    return true;
+  }
+
+  function categoryMatchOr(d) {
+    return applied.categories.size === 0 || applied.categories.has(d.category);
+  }
+
+  function categoryMatchPercent(d) {
+    const mix = d.category_mix || {};
+    return percentEntries.every(([cat, pct]) => (mix[cat] || 0) >= pct);
+  }
+
+  let rows;
+  applied.percentFallback = false;
+
+  if (percentEntries.length > 0) {
+    rows = DATA.filter(d => baseMatch(d) && categoryMatchOr(d) && categoryMatchPercent(d));
+    if (rows.length === 0) {
+      // 비중 조건을 동시에 만족하는 채널이 없으면, 최소한 카테고리 조건에 맞는 채널이라도 보여줌
+      rows = DATA.filter(d => baseMatch(d) && categoryMatchOr(d));
+      applied.percentFallback = true;
+    }
+  } else {
+    rows = DATA.filter(d => baseMatch(d) && categoryMatchOr(d));
+  }
+
+  rows.sort((a, b) => {
+    const dir = state.sortDir === "asc" ? 1 : -1;
+    const k = state.sortKey;
+    return a[k] > b[k] ? dir : a[k] < b[k] ? -dir : 0;
+  });
+  return rows;
+}
+
+function toggleSort(key) {
+  if (state.sortKey === key) {
+    state.sortDir = state.sortDir === "desc" ? "asc" : "desc";
+  } else {
+    state.sortKey = key;
+    state.sortDir = "desc";
+  }
+  render();
+}
+
+function togglePlatform(p) {
+  if (state.platforms.has(p)) state.platforms.delete(p);
+  else state.platforms.add(p);
+  render();
+}
+
+function thLabel(label, key, align, tooltip) {
+  const active = state.sortKey === key;
+  const arrow = active ? (state.sortDir === "desc" ? " \u25bc" : " \u25b2") : "";
+  const info = tooltip ? ` <span title="${tooltip.replace(/"/g, "&quot;")}" style="cursor:help;">ⓘ</span>` : "";
+  return `<th data-sort="${key}" style="padding:8px 12px;text-align:${align || "left"};font-weight:500;color:${active ? "#18181B" : "#6D6D76"};cursor:pointer;user-select:none;white-space:nowrap;">${label}${arrow}${info}</th>`;
+}
+
+function channelLink(d) {
+  if (d.platform === "youtube") return `https://www.youtube.com/channel/${encodeURIComponent(d.channel_id)}`;
+  const handle = d.platform === "instagram" ? d.title : d.instagram_handle;
+  return handle ? `https://www.instagram.com/${encodeURIComponent(handle)}/` : null;
+}
+
+function avatarHtml(d) {
+  const ramp = avatarColor(d.title);
+  const [bg, fg] = RAMP_HEX[ramp];
+  const initial = d.title.trim().charAt(0);
+  const platformDot = d.platform === "youtube" ? "#E24B4A" : "#D4537E";
+  return `
+    <div style="position:relative;width:36px;height:36px;">
+      <div style="width:36px;height:36px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;">${initial}</div>
+      <div title="${d.platform === "youtube" ? "유튜브" : "인스타그램"}" style="position:absolute;bottom:-2px;right:-2px;width:14px;height:14px;border-radius:50%;background:${platformDot};border:2px solid #FFFFFF;"></div>
+    </div>`;
+}
+
+function platformPill(id, label, checked) {
+  return `<button type="button" data-platform="${id}" style="padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid ${checked ? "#5B4FE0" : "#D9D9E0"};background:${checked ? "#5B4FE0" : "#FFFFFF"};color:${checked ? "#FFFFFF" : "#6D6D76"};">${label}</button>`;
+}
+
+function rangeBg(value, min, max) {
+  const pct = ((value - min) / (max - min)) * 100;
+  return `background:linear-gradient(to right, #5B4FE0 0%, #5B4FE0 ${pct}%, #E6E6EA ${pct}%, #E6E6EA 100%);`;
+}
+
+function bindGmailSidebarButtons() {
+  const connectBtn = document.querySelector("[data-gmail-connect]");
+  if (connectBtn) connectBtn.onclick = () => connectGoogle();
+  const disconnectBtn = document.querySelector("[data-gmail-disconnect]");
+  if (disconnectBtn) disconnectBtn.onclick = () => disconnectGoogle();
+}
+
+function sidebarHtml() {
+  const items = NAV_ITEMS.map(item => {
+    const active = state.activeTab === item.id;
+    return `<div data-nav="${item.id}" style="padding:10px 12px;border-radius:8px;font-size:14px;cursor:pointer;background:${active ? "#EEECFC" : "transparent"};color:${active ? "#5B4FE0" : "#6D6D76"};font-weight:${active ? 600 : 400};">${item.label}</div>`;
+  }).join("");
+  const gmailStatus = state.gmailToken
+    ? `<div style="display:flex;flex-direction:column;gap:6px;">
+         <div style="font-size:11px;color:#A3A3AD;">Gmail 연결됨</div>
+         <div style="font-size:12px;color:#18181B;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${state.gmailAccountEmail || ""}</div>
+         <button data-gmail-disconnect style="padding:6px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#6D6D76;font-size:11px;cursor:pointer;">연결 해제</button>
+       </div>`
+    : `<button data-gmail-connect style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">📧 Gmail 연결</button>`;
+  return `
+    <div style="width:220px;flex-shrink:0;padding:28px 20px;border-right:1px solid #E6E6EA;display:flex;flex-direction:column;gap:24px;background:#FFFFFF;">
+      <div style="font-size:18px;font-weight:700;line-height:1.25;">Influencer<br>Tools</div>
+      <div style="display:flex;flex-direction:column;gap:4px;">${items}</div>
+      <div style="margin-top:auto;padding-top:16px;border-top:1px solid #E6E6EA;">${gmailStatus}</div>
+    </div>`;
+}
+
+const MIXSOON_CAMPAIGN_CHANNELS = [{"no": 1, "name": "최종시안", "link": "https://www.youtube.com/channel/UC_1ETgrcrLjHOP0YJmkWLVQ", "subscribers": 362000, "content_type": "뷰티+브이로그", "features": "뷰티, 건강, 라이프스타일 팁을 공유하는 채널"}, {"no": 2, "name": "관리는 하고 살자", "link": "https://www.youtube.com/channel/UCVbW7vOtOnmjyDORZB4Sz0w", "subscribers": 358000, "content_type": "뷰티+건강", "features": "남성 뷰티, 건강, 자기관리 꿀팁 공유"}, {"no": 3, "name": "옌마드Yenmad", "link": "https://www.youtube.com/channel/UCAVIfs9U_yhPL234y2V2e4g", "subscribers": 355000, "content_type": "뷰티+브이로그", "features": "20대 자기관리, 뷰티, 라이프 브이로그"}, {"no": 4, "name": "뷰티숨BEAUTYSOOM", "link": "https://www.youtube.com/channel/UCLyq1gz11P-IYFmP093JaAw", "subscribers": 348000, "content_type": "뷰티+브이로그", "features": "전문가에게 배우는 ASMR 뷰티 팁 및 경험"}, {"no": 5, "name": "소의튜브soytube", "link": "https://www.youtube.com/channel/UC8qXNVuyfJLJtDf8vCr_xNw", "subscribers": 310000, "content_type": "뷰티", "features": "피부과 10년 경력의 미용 꿀팁과 제품 리뷰"}, {"no": 6, "name": "제이나 [Jaina]", "link": "https://www.youtube.com/channel/UCYsv-IHC-B-DiVMmJuqibcg", "subscribers": 281000, "content_type": "뷰티", "features": "화장품 마케터의 성분 분석, 비교 및 자사 제품 홍보"}, {"no": 7, "name": "쏭냥", "link": "https://www.youtube.com/channel/UC9P1tkf6e0hS7vzuDEuuAeA", "subscribers": 259000, "content_type": "뷰티+건강", "features": "맑은 피부를 위한 메이크업, 이너뷰티, 시술, 셀프케어 노하우를 공유하는 채널"}, {"no": 8, "name": "Coco Riley (코코 라일리)", "link": "https://www.youtube.com/channel/UCWQ0Xc5W-f2oSgx_Eohi9bQ", "subscribers": 258000, "content_type": "뷰티+건강", "features": "메이크업, 스킨케어 제품 리뷰와 피부 고민 해결 팁을 제공."}, {"no": 9, "name": "심톨 𝐒𝐈𝐌𝐓𝐎𝐇𝐋", "link": "https://www.youtube.com/channel/UCgRElRhf8PWv95nqExiQXHA", "subscribers": 249000, "content_type": "뷰티+패션", "features": "피부 시술, 패션 쇼핑 꿀팁 공유 채널"}, {"no": 10, "name": "단이 DANI", "link": "https://www.youtube.com/channel/UCxAdlKnB5u0a7A-iqRa5jYw", "subscribers": 235000, "content_type": "뷰티+패션", "features": "가성비와 꿀팁 위주 뷰티&패션 쇼핑 가이드"}, {"no": 11, "name": "임보라", "link": "https://www.youtube.com/channel/UCA1GLnIr2FL43PtWLmwhDvQ", "subscribers": 234000, "content_type": "뷰티+브이로그", "features": "임보라의 일상 브이로그 및 뷰티 콘텐츠"}, {"no": 12, "name": "bbomni 뽐니", "link": "https://www.youtube.com/channel/UCmPkZXhVfyLLWyHQM-l_KqA", "subscribers": 231000, "content_type": "뷰티", "features": "뷰티 신상 발굴과 전문가 꿀템을 공유하는 채널"}, {"no": 13, "name": "You need 윤이든", "link": "https://www.youtube.com/channel/UC57_jVZTM427hTqYMXf7utA", "subscribers": 216000, "content_type": "뷰티+패션", "features": "뷰티/패션/여행/다이어트 등 다양한 라이프스타일 공유"}, {"no": 14, "name": "톡신TOXIN", "link": "https://www.youtube.com/channel/UCHa6h8DGLYkAljbskQbIXHw", "subscribers": 206000, "content_type": "뷰티", "features": "무쌍 메이크업 & 스킨케어 꿀팁, 제품 리뷰 전문"}, {"no": 15, "name": "Kook연주", "link": "https://www.youtube.com/channel/UCSaEL-LEI41oepK5V5EXb2Q", "subscribers": 201000, "content_type": "뷰티+푸드", "features": "전직 화장품 연구원의 피부/음식 웰니스 채널"}, {"no": 16, "name": "오영주 OH!YOUNGJOO", "link": "https://www.youtube.com/channel/UCFsSyiKOtZD7YNt8uXHRlzg", "subscribers": 194000, "content_type": "브이로그+패션", "features": "오영주의 일상, 패션, 뷰티, 여행 정보를 담은 브이로그"}, {"no": 17, "name": "뭉컁 MungKyang", "link": "https://www.youtube.com/channel/UCDCvlVx1noYrb0rNN9N6Yqg", "subscribers": 188000, "content_type": "뷰티+브이로그", "features": "뷰티/생활 꿀템과 일상을 공유하는 채널"}, {"no": 18, "name": "유리하다", "link": "https://www.youtube.com/channel/UCgDgtCXMcNZ51QZ16K3M5cQ", "subscribers": 187000, "content_type": "뷰티+패션", "features": "뷰티 패션 쇼핑 리뷰를 유쾌하게 다루는 개그 채널"}, {"no": 19, "name": "화니 HWAN'E", "link": "https://www.youtube.com/channel/UCff7sQ_kjCEPZvr8h8US8ww", "subscribers": 172000, "content_type": "뷰티+브이로그", "features": "경험 기반 뷰티 꿀템 및 스킨케어 노하우 추천 채널"}, {"no": 20, "name": "이손 eson", "link": "https://www.youtube.com/channel/UCE5Q4Oy9GqzERUmI3E18s-A", "subscribers": 172000, "content_type": "뷰티+브이로그", "features": "뷰티 모델의 자기관리, 패션, 일상 브이로그"}, {"no": 21, "name": "림온 RIMON", "link": "https://www.youtube.com/channel/UCQG5MOnlAl5nUDR_JFOrrxA", "subscribers": 159000, "content_type": "뷰티+리빙", "features": "전직 뷰티BM의 관리 집착 피부/파데프리 꿀팁"}, {"no": 22, "name": "헤블 HEBLE", "link": "https://www.youtube.com/channel/UCb8_UiUdnM9S7r1aYPAsSMw", "subscribers": 159000, "content_type": "뷰티+리빙", "features": "피부 관리 팁과 실용적인 뷰티/리빙 꿀템 공유"}, {"no": 23, "name": "MysterLee터리", "link": "https://www.youtube.com/channel/UCm3aFTKTRsClNaN0rsYmQYg", "subscribers": 158000, "content_type": "뷰티+브이로그", "features": "센스있는 뷰티템 추천과 쇼핑 브이로그"}, {"no": 24, "name": "박비비 VIVI", "link": "https://www.youtube.com/channel/UCpSa5CzQedAxXFGfmeeFdIw", "subscribers": 138000, "content_type": "뷰티+브이로그", "features": "솔직한 팩트 기반 뷰티 리뷰 및 일상 브이로그"}, {"no": 25, "name": "래띠 LAETI", "link": "https://www.youtube.com/channel/UC4PAS3ck6trKI0RsM2Nskew", "subscribers": 134000, "content_type": "뷰티+브이로그", "features": "건강한 피부 관리와 일상을 담는 뷰티 유튜버"}, {"no": 26, "name": "한별두별[Hanna]", "link": "https://www.youtube.com/channel/UCYfAankzCbhjIV4EsU4Vzdw", "subscribers": 131000, "content_type": "뷰티", "features": "지성/트러블 피부를 위한 현실적 뷰티 꿀팁과 찐템 리뷰"}, {"no": 27, "name": "잠티", "link": "https://www.youtube.com/channel/UCxR4o2eiQz_nc2dUXGyysCw", "subscribers": 128000, "content_type": "뷰티", "features": "성분 기반 뷰티 제품 비판 및 분석 채널"}, {"no": 28, "name": "오드라이프oddlife", "link": "https://www.youtube.com/channel/UC9JU9mfYpg4KqxNZtD91GQg", "subscribers": 127000, "content_type": "뷰티+리빙", "features": "내돈내산 뷰티 및 리빙템 리뷰"}, {"no": 29, "name": "효블리 Hyovely", "link": "https://www.youtube.com/channel/UCB44fSGXvnBP6CVp10CenPg", "subscribers": 126000, "content_type": "뷰티+패션", "features": "봄웜 라이트의 신상 뷰티·패션 리뷰"}, {"no": 30, "name": "아우라M", "link": "https://www.youtube.com/channel/UCat2CSzaple02nnhbUSJ2zg", "subscribers": 125000, "content_type": "뷰티+패션", "features": "16년차 팩폭 에디터의 뷰티 패션 솔직 리뷰"}, {"no": 31, "name": "스칼렛 언니", "link": "https://www.youtube.com/channel/UCR8th9vv4cSnfoY-Gx5hnbA", "subscribers": 118000, "content_type": "뷰티+브이로그", "features": "화장품 개발자가 전하는 솔직한 뷰티 꿀팁"}, {"no": 32, "name": "하나둘세민 SEMIN", "link": "https://www.youtube.com/channel/UCr3rS9bIcUVSwnoCjV7yLPQ", "subscribers": 116000, "content_type": "뷰티+브이로그", "features": "다양한 메이크업과 일상을 공유하는 채널"}, {"no": 33, "name": "비트 BTE", "link": "https://www.youtube.com/channel/UCvGvf3Lk0Z5reU544g_SzPg", "subscribers": 111000, "content_type": "뷰티+리빙", "features": "피부 및 라이프스타일 관리 꿀팁과 추천템 리뷰 채널"}, {"no": 34, "name": "데일리 미라클", "link": "https://www.youtube.com/channel/UCk1BE73NfSUGz19LpNg9E-w", "subscribers": 382000, "content_type": "뷰티+패션", "features": "304050대 웰에이징 뷰티·패션·라이프스타일 꿀팁 채널(연령대 높음)"}, {"no": 35, "name": "뷰티마우스", "link": "https://www.youtube.com/channel/UCE7q5DzYcRYWObUNIpdO70A", "subscribers": 381000, "content_type": "뷰티+리빙", "features": "올영/쿠팡 중심의 뷰티 및 생활 꿀템 추천(연령대 높음)"}, {"no": 36, "name": "지인언니New Yorker Jiin", "link": "https://www.youtube.com/channel/UCWltt-7JK8k6IZjtuKzEdVA", "subscribers": 213000, "content_type": "뷰티+브이로그", "features": "50대 뉴요커가 전하는 뷰티, 건강, 라이프스타일 꿀팁(연령대 높음)"}, {"no": 37, "name": "모델엄마TV", "link": "https://www.youtube.com/channel/UCE2I3Ku0QqKRHg7kggyILMA", "subscribers": 192000, "content_type": "뷰티", "features": "동안 피부 위한 안티에이징 홈케어 뷰티 채널(연령대 높음)"}, {"no": 38, "name": "소살 Sora Salon", "link": "https://www.youtube.com/channel/UCPkgjWwYOiMKqNJpwdA8lPA", "subscribers": 135000, "content_type": "뷰티+패션", "features": "14년차 쇼호스트의 뷰티, 패션, 쇼핑 고급 정보(연령대 높음)"}, {"no": null, "name": "총 38개 · 발송 33개(회신 대기중) · 미발송 5개(연락처 없음) · 기준 2026-07-27 16:55", "link": null, "subscribers": null, "content_type": null, "features": null}, {"no": null, "name": "[2026-07-29_0956 기준] 회신 6 · 자동응답 0 · 반송 0 · 대기 27 · 미발송 5", "link": null, "subscribers": null, "content_type": null, "features": null}, {"no": null, "name": "[가격 출처] 2026-07-27~28 회신 메일 원문(Gmail) 그대로 표기 · 단위=만원 · 별도 표기 없으면 VAT 여부 원문에 명시 없음", "link": null, "subscribers": null, "content_type": null, "features": null}]
+;
+
+let SAVED_LISTS = [
+  { name: "믹순 3차 — 기초화장품 채널", category: "기초화장품", count: MIXSOON_CAMPAIGN_CHANNELS.length, updated: "2026.07.29 수정", icon: "믹", bg: "#E6F1FB", fg: "#0C447C", campaignMembers: MIXSOON_CAMPAIGN_CHANNELS },
+  { name: "6월 뷰티 캠페인 후보", category: "뷰티", count: 12, updated: "2026.07.20 수정", icon: "뷰", bg: "#EEECFC", fg: "#3C3489" },
+  { name: "게임 스트리머 Pool", category: "게임", count: 8, updated: "2026.07.15 수정", icon: "게", bg: "#E1F5EE", fg: "#085041" },
+  { name: "여행 인플루언서 후보", category: "여행", count: 5, updated: "2026.07.10 수정", icon: "여", bg: "#FBEAF0", fg: "#72243E" },
+  { name: "패션 브랜드 협찬 후보", category: "패션", count: 20, updated: "2026.07.02 수정", icon: "패", bg: "#FAEEDA", fg: "#633806" },
+];
+
+async function exportCampaignToExcel(list) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("채널 리스트");
+  ws.views = [{ showGridLines: false }];
+  ws.columns = [
+    { width: 6 }, { width: 26 }, { width: 40 }, { width: 12 }, { width: 16 }, { width: 40 },
+  ];
+  const headerFill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF002060" } };
+  const headers = ["번호", "채널명", "채널 링크", "구독자수", "주력 콘텐츠 유형", "특징"];
+  headers.forEach((h, i) => {
+    const cell = ws.getCell(1, i + 1);
+    cell.value = h;
+    cell.font = { name: "맑은 고딕", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = headerFill;
+  });
+  list.campaignMembers.forEach((m, r) => {
+    const row = r + 2;
+    ws.getCell(row, 1).value = m.no ?? "";
+    ws.getCell(row, 2).value = m.name || "";
+    ws.getCell(row, 3).value = m.link || "";
+    ws.getCell(row, 4).value = m.subscribers ?? "";
+    ws.getCell(row, 5).value = m.content_type || "";
+    ws.getCell(row, 6).value = m.features || "";
+  });
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const today = new Date().toISOString().slice(0, 10);
+  const safeTitle = list.name.replace(/[\\/:*?"<>|]/g, "").trim();
+  a.href = url;
+  a.download = `${safeTitle}_${today}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function getListMembers(l) {
+  if (l.memberIds) {
+    const idSet = new Set(l.memberIds);
+    return DATA.filter(d => idSet.has(d.channel_id));
+  }
+  return DATA.filter(d => d.category === l.category);
+}
+
+function savedListTabHtml() {
+  if (state.savedListDetailIdx !== null) return savedListDetailHtml(state.savedListDetailIdx);
+
+  const cards = SAVED_LISTS.map((l, idx) => {
+    const rawMembers = l.campaignMembers || getListMembers(l);
+    const members = rawMembers.slice(0, 4);
+    const visible = members.length ? members : DATA.slice(0, 4);
+    const avatarStack = visible.map((m, i) => {
+      const label = m.title || m.name || "?";
+      const ramp = avatarColor(label);
+      const [bg, fg] = RAMP_HEX[ramp];
+      return `<div style="width:28px;height:28px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;border:2px solid #FFFFFF;margin-left:${i === 0 ? 0 : -10}px;">${label.trim().charAt(0)}</div>`;
+    }).join("");
+    const moreBadge = l.count > visible.length
+      ? `<div style="width:28px;height:28px;border-radius:50%;background:#EFEFF2;color:#6D6D76;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;border:2px solid #FFFFFF;margin-left:-10px;">+${l.count - visible.length}</div>`
+      : "";
+    const menuOpen = state.listMenuOpenIdx === idx;
+    return `
+      <div style="display:flex;align-items:center;gap:20px;padding:18px 22px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:14px;">
+        <div style="width:48px;height:48px;border-radius:12px;background:${l.bg};color:${l.fg};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;flex-shrink:0;">${l.icon}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:16px;font-weight:600;">${l.name}</div>
+          <div style="font-size:12px;color:#6D6D76;margin-top:4px;">인플루언서 ${l.count}명 · ${l.updated}</div>
+        </div>
+        <div style="display:flex;align-items:center;flex-shrink:0;">${avatarStack}${moreBadge}</div>
+        <div style="display:flex;gap:8px;flex-shrink:0;position:relative;">
+          <button data-list-view="${idx}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;">보기</button>
+          <button data-list-menu="${idx}" style="width:36px;height:36px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#6D6D76;font-size:14px;font-weight:600;cursor:pointer;">···</button>
+          ${menuOpen ? `
+          <div data-list-menu-outside style="position:fixed;inset:0;z-index:40;"></div>
+          <div style="position:absolute;top:calc(100% + 4px);right:0;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.10);padding:6px;z-index:50;min-width:160px;">
+            <button data-list-export="${idx}" style="width:100%;text-align:left;padding:8px 10px;border:none;background:none;font-size:13px;color:#18181B;cursor:pointer;border-radius:6px;">⬇ 엑셀로 내보내기</button>
+            <button data-list-delete="${idx}" style="width:100%;text-align:left;padding:8px 10px;border:none;background:none;font-size:13px;color:#D93B3B;cursor:pointer;border-radius:6px;">삭제</button>
+          </div>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:1.25rem;flex-wrap:wrap;">
+        <div>
+          <h2 style="margin:0;">저장한 리스트</h2>
+          <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">캠페인별로 저장해둔 인플루언서 후보 리스트를 관리하세요</p>
+        </div>
+        <button id="new-empty-list-btn" style="padding:10px 16px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">+ 새 리스트 만들기</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;">${cards}</div>
+    </div>`;
+}
+
+function campaignListDetailHtml(idx) {
+  const l = SAVED_LISTS[idx];
+  const shown = l.campaignMembers;
+
+  const rows = shown.map(m => `
+    <tr style="border-bottom:1px solid #E6E6EA;">
+      <td style="padding:8px 12px;color:#A3A3AD;">${m.no ?? ""}</td>
+      <td style="padding:8px 12px;">
+        ${m.link
+          ? `<a href="${m.link}" target="_blank" rel="noopener noreferrer" style="color:#18181B;font-weight:500;text-decoration:none;">${m.name} ↗</a>`
+          : m.name}
+      </td>
+      <td style="padding:8px 12px;text-align:right;">${m.subscribers != null ? formatNumber(m.subscribers) : "-"}</td>
+      <td style="padding:8px 12px;color:#6D6D76;">${m.content_type || "-"}</td>
+      <td style="padding:8px 12px;color:#6D6D76;">${m.features || "-"}</td>
+    </tr>`).join("");
+
+  return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <button id="list-back" style="display:flex;align-items:center;gap:6px;padding:6px 0;border:none;background:none;color:#6D6D76;font-size:13px;cursor:pointer;margin-bottom:12px;">← 저장한 리스트로</button>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:1.25rem;">
+        <div style="width:48px;height:48px;border-radius:12px;background:${l.bg};color:${l.fg};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;flex-shrink:0;">${l.icon}</div>
+        <div style="flex:1;">
+          <h2 style="margin:0;">${l.name}</h2>
+          <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">채널 ${shown.length}개 · ${l.updated} · 가격·연락처 등은 추가 예정</p>
+        </div>
+        <button data-campaign-export="${idx}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">⬇ 엑셀로 내보내기</button>
+      </div>
+      <div style="border:1px solid #E6E6EA;border-radius:12px;overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="background:#FAFAFB;border-bottom:1px solid #E6E6EA;">
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;width:48px;">번호</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">채널명</th>
+              <th style="padding:8px 12px;text-align:right;font-weight:500;color:#6D6D76;">구독자수</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">주력 콘텐츠 유형</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">특징</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function savedListDetailHtml(idx) {
+  const l = SAVED_LISTS[idx];
+  if (l.campaignMembers) return campaignListDetailHtml(idx);
+  const members = getListMembers(l);
+  const shown = members.length ? members : DATA.slice(0, l.count);
+
+  const rows = shown.map(d => `
+    <tr style="border-bottom:1px solid #E6E6EA;">
+      <td style="padding:8px 12px;">${avatarHtml(d)}</td>
+      <td style="padding:8px 12px;">
+        ${d.title}
+        ${d.cross_platform ? `<span style="margin-left:6px;font-size:11px;padding:1px 6px;border-radius:999px;background:#EEECFC;color:#5B4FE0;">유튜브+인스타</span>` : ""}
+      </td>
+      <td style="padding:8px 12px;color:#6D6D76;">${d.platform === "youtube" ? "유튜브" : "인스타그램"}</td>
+      <td style="padding:8px 12px;text-align:right;">${formatNumber(d.subscriber_count)}</td>
+      <td style="padding:8px 12px;text-align:right;">${d.engagement_rate_pct}%</td>
+      <td style="padding:8px 12px;">${d.email ? d.email : `<span style="color:#A3A3AD;font-size:12px;">별도 확인이 필요함</span>`}</td>
+      <td style="padding:8px 12px;text-align:center;">
+        <span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;background:${d.healthy_account ? "#E3F6EA" : "#FBEAEA"};color:${d.healthy_account ? "#0F9D58" : "#D93B3B"};">
+          ${d.healthy_account ? "건강함" : "저조함"}
+        </span>
+      </td>
+    </tr>`).join("");
+
+  return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <button id="list-back" style="display:flex;align-items:center;gap:6px;padding:6px 0;border:none;background:none;color:#6D6D76;font-size:13px;cursor:pointer;margin-bottom:12px;">← 저장한 리스트로</button>
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:1.25rem;">
+        <div style="width:48px;height:48px;border-radius:12px;background:${l.bg};color:${l.fg};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;flex-shrink:0;">${l.icon}</div>
+        <div style="flex:1;">
+          <h2 style="margin:0;">${l.name}</h2>
+          <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">인플루언서 ${shown.length}명 · ${l.updated}</p>
+        </div>
+        <button data-list-detail-export="${idx}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">⬇ 엑셀로 내보내기</button>
+      </div>
+      <div style="border:1px solid #E6E6EA;border-radius:12px;overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="background:#FAFAFB;border-bottom:1px solid #E6E6EA;">
+              <th style="padding:8px 12px;"></th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">이름</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">플랫폼</th>
+              <th style="padding:8px 12px;text-align:right;font-weight:500;color:#6D6D76;">팔로워/구독자</th>
+              <th style="padding:8px 12px;text-align:right;font-weight:500;color:#6D6D76;">댓글 반응도</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:500;color:#6D6D76;">이메일</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:500;color:#6D6D76;">계정 상태</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+let HISTORY_ITEMS = []; // 실제 검색을 실행할 때마다 performQuery()에서 채워짐
+
+function historyTabHtml() {
+  if (!HISTORY_ITEMS.length) {
+    return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <div style="margin-bottom:1.25rem;">
+        <h2 style="margin:0;">검색 히스토리</h2>
+        <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">지금까지 실행한 검색 조건을 다시 불러올 수 있어요</p>
+      </div>
+      <div style="padding:48px;text-align:center;border:1px dashed #E6E6EA;border-radius:12px;color:#A3A3AD;font-size:13px;background:#FFFFFF;">
+        아직 실시간 검색 기록이 없어요. "인플루언서 검색" 탭에서 카테고리를 선택하고 조회하면 여기에 기록됩니다.
+      </div>
+    </div>`;
+  }
+
+  const rows = HISTORY_ITEMS.map((h, i) => {
+    const platformLabel = h.platforms.length === 2 ? "유튜브+인스타" : (h.platforms[0] === "youtube" ? "유튜브" : "인스타그램");
+    return `
+      <div style="display:flex;align-items:center;gap:20px;padding:16px 20px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:12px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:15px;font-weight:600;">${h.categories.join(", ")}</span>
+            <span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#EEECFC;color:#5B4FE0;">${platformLabel}</span>
+          </div>
+          <div style="font-size:12px;color:#6D6D76;margin-top:6px;">
+            팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 최소 댓글 반응도 ${h.minEngagement.toFixed(1)}% · 결과 ${h.resultCount}건 · ${h.when}
+          </div>
+        </div>
+        <button data-history-idx="${i}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">↺ 다시 검색</button>
+      </div>`;
+  }).join("");
+
+  return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <div style="margin-bottom:1.25rem;">
+        <h2 style="margin:0;">검색 히스토리</h2>
+        <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">지금까지 실행한 검색 조건을 다시 불러올 수 있어요</p>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:10px;">${rows}</div>
+    </div>`;
+}
+
+function placeholderTabHtml(title) {
+  return `
+    <div style="flex:1;padding:32px 40px;background:#F6F6F8;">
+      <h2 style="margin:0 0 6px;">${title}</h2>
+      <div style="margin-top:24px;padding:48px;text-align:center;border:1px dashed #E6E6EA;border-radius:12px;color:#A3A3AD;font-size:13px;">
+        ${title} 화면은 준비 중입니다.
+      </div>
+    </div>`;
+}
+
+function todayLabel() {
+  const d = new Date();
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")} 수정`;
+}
+
+function openSaveListModal(rows) {
+  saveListModal = { open: true, rows: rows || [] };
+  renderSaveListModal();
+}
+
+function closeSaveListModal() {
+  saveListModal = { open: false, rows: null, mode: "new" };
+  renderSaveListModal();
+}
+
+function renderSaveListModal() {
+  const root = document.getElementById("save-list-modal");
+  if (!saveListModal.open) { root.innerHTML = ""; return; }
+
+  const count = saveListModal.rows.length;
+  const existingLists = SAVED_LISTS
+    .map((l, idx) => ({ l, idx }))
+    .filter(({ l }) => !l.campaignMembers); // 캠페인 전용 리스트는 구조가 달라 추가 대상에서 제외
+  const mode = saveListModal.mode || "new";
+
+  root.innerHTML = `
+    <div id="save-list-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1100;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#FFFFFF;border-radius:14px;padding:24px;width:380px;max-width:90vw;box-shadow:0 12px 32px rgba(0,0,0,0.18);" onclick="event.stopPropagation()">
+        <div style="font-size:16px;font-weight:700;margin-bottom:4px;">리스트에 저장</div>
+        <div style="font-size:12px;color:#6D6D76;margin-bottom:14px;">${count > 0 ? `현재 결과 ${count}명을 저장합니다.` : "빈 리스트를 만듭니다."}</div>
+
+        ${existingLists.length ? `
+        <div style="display:flex;gap:6px;margin-bottom:14px;">
+          <button type="button" data-save-mode="new" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${mode === "new" ? "#5B4FE0" : "#E6E6EA"};background:${mode === "new" ? "#EEECFC" : "#FFFFFF"};color:${mode === "new" ? "#5B4FE0" : "#6D6D76"};font-size:12px;font-weight:600;cursor:pointer;">새 리스트로 저장</button>
+          <button type="button" data-save-mode="existing" style="flex:1;padding:8px;border-radius:8px;border:1px solid ${mode === "existing" ? "#5B4FE0" : "#E6E6EA"};background:${mode === "existing" ? "#EEECFC" : "#FFFFFF"};color:${mode === "existing" ? "#5B4FE0" : "#6D6D76"};font-size:12px;font-weight:600;cursor:pointer;">기존 리스트에 추가</button>
+        </div>` : ""}
+
+        ${mode === "existing" && existingLists.length ? `
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">추가할 리스트</label>
+        <select id="save-list-modal-select" style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;box-sizing:border-box;margin-bottom:18px;">
+          ${existingLists.map(({ l, idx }) => `<option value="${idx}">${l.name} (${l.count}명)</option>`).join("")}
+        </select>
+        ` : `
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">리스트 이름</label>
+        <input id="save-list-modal-input" type="text" placeholder="예: 6월 뷰티 캠페인 후보"
+          style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;box-sizing:border-box;margin-bottom:18px;">
+        `}
+
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="save-list-modal-cancel" type="button" style="padding:9px 16px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;">취소</button>
+          <button id="save-list-modal-save" type="button" style="padding:9px 16px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">저장</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.querySelectorAll("[data-save-mode]").forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); saveListModal.mode = btn.dataset.saveMode; renderSaveListModal(); };
+  });
+
+  const input = document.getElementById("save-list-modal-input");
+  if (input) input.focus();
+
+  const confirm = () => {
+    const rows = saveListModal.rows;
+
+    if (mode === "existing" && existingLists.length) {
+      const select = document.getElementById("save-list-modal-select");
+      const idx = Number(select.value);
+      const list = SAVED_LISTS[idx];
+      const idSet = new Set(list.memberIds || []);
+      rows.forEach(d => idSet.add(d.channel_id));
+      list.memberIds = [...idSet];
+      list.count = list.memberIds.length;
+      list.updated = todayLabel();
+      saveToLocalStorage();
+      closeSaveListModal();
+      state.activeTab = "saved";
+      state.savedListDetailIdx = null;
+      render();
+      return;
+    }
+
+    const name = input.value.trim();
+    if (!name) { input.style.border = "1px solid #D93B3B"; return; }
+    const ramp = avatarColor(name);
+    const [bg, fg] = RAMP_HEX[ramp];
+    const catCounts = {};
+    rows.forEach(d => { catCounts[d.category] = (catCounts[d.category] || 0) + 1; });
+    const topCategory = Object.entries(catCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "기타";
+
+    SAVED_LISTS.unshift({
+      name,
+      category: topCategory,
+      count: rows.length,
+      updated: todayLabel(),
+      icon: name.trim().charAt(0),
+      bg, fg,
+      memberIds: rows.map(d => d.channel_id),
+    });
+
+    saveToLocalStorage();
+    closeSaveListModal();
+    state.activeTab = "saved";
+    state.savedListDetailIdx = null;
+    render();
+  };
+
+  document.getElementById("save-list-modal-save").onclick = confirm;
+  if (input) input.onkeydown = e => { if (e.key === "Enter") confirm(); };
+  document.getElementById("save-list-modal-cancel").onclick = closeSaveListModal;
+  document.getElementById("save-list-modal-overlay").onclick = closeSaveListModal;
+}
+
+function openExportModal(rows, defaultTitle) {
+  exportModal = { open: true, rows, defaultTitle: defaultTitle || "" };
+  renderExportModal();
+}
+
+function closeExportModal() {
+  exportModal = { open: false, rows: null, defaultTitle: "" };
+  renderExportModal();
+}
+
+function renderExportModal() {
+  const root = document.getElementById("export-modal");
+  if (!exportModal.open) { root.innerHTML = ""; return; }
+
+  root.innerHTML = `
+    <div id="export-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1100;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#FFFFFF;border-radius:14px;padding:24px;width:360px;max-width:90vw;box-shadow:0 12px 32px rgba(0,0,0,0.18);" onclick="event.stopPropagation()">
+        <div style="font-size:16px;font-weight:700;margin-bottom:4px;">엑셀로 내보내기</div>
+        <div style="font-size:12px;color:#6D6D76;margin-bottom:16px;">이 내보내기의 캠페인명을 입력해주세요. 엑셀 파일 상단(B2)에 표시됩니다.</div>
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">캠페인명</label>
+        <input id="export-modal-input" type="text" value="${exportModal.defaultTitle.replace(/"/g, "&quot;")}" placeholder="예: 6월 뷰티 캠페인 후보"
+          style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;box-sizing:border-box;margin-bottom:18px;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button id="export-modal-cancel" type="button" style="padding:9px 16px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;">취소</button>
+          <button id="export-modal-save" type="button" style="padding:9px 16px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:13px;font-weight:600;cursor:pointer;">저장</button>
+        </div>
+      </div>
+    </div>`;
+
+  const input = document.getElementById("export-modal-input");
+  input.focus();
+  input.select();
+
+  const confirm = () => {
+    const rows = exportModal.rows;
+    const campaignName = input.value.trim() || exportModal.defaultTitle || "인플루언서 서칭 결과";
+    closeExportModal();
+    exportToExcel(rows, campaignName);
+  };
+
+  document.getElementById("export-modal-save").onclick = confirm;
+  input.onkeydown = e => { if (e.key === "Enter") confirm(); };
+  document.getElementById("export-modal-cancel").onclick = closeExportModal;
+  document.getElementById("export-modal-overlay").onclick = closeExportModal;
+}
+
+async function exportToExcel(rows, title) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("인플루언서 리스트");
+  ws.views = [{ showGridLines: false }];
+
+  ws.columns = [
+    { width: 2.625 }, { width: 31.375 }, { width: 12.75 }, { width: 10.75 },
+    { width: 14.75 }, { width: 19.0 }, { width: 55.875 }, { width: 16.5 },
+    { width: 15.125 }, { width: 28.75 }, { width: 20.75 }, { width: 10.75 },
+    { width: 18.5 }, { width: 8.875 },
+  ];
+
+  const thinWhite = { style: "thin", color: { argb: "FFFFFFFF" } };
+  const thinGray = { style: "thin", color: { argb: "FFA6A6A6" } };
+
+  // 2행: B2 = 리스트 이름, M2 = 발행일자 (마지막 헤더 열에 맞춰 이동)
+  ws.getRow(2).height = 27.75;
+  const titleCell = ws.getCell("B2");
+  titleCell.value = title || "인플루언서 서칭 결과";
+  titleCell.font = { name: "맑은 고딕", size: 14, bold: true, color: { argb: "FF000000" } };
+  titleCell.alignment = { vertical: "middle" };
+  titleCell.border = { top: thinWhite, bottom: thinWhite, left: thinWhite, right: thinWhite };
+
+  const dateCell = ws.getCell("M2");
+  dateCell.value = new Date();
+  dateCell.numFmt = "mm-dd-yy";
+  dateCell.font = { name: "맑은 고딕", size: 10 };
+  dateCell.border = { top: thinWhite, bottom: thinWhite, left: thinWhite, right: thinWhite };
+
+  // 3행: 헤더 (고정)
+  ws.getRow(3).height = 23.25;
+  const headers = ["이름", "플랫폼", "카테고리", "채널링크", "주력 컨텐츠 유형", "특징", "팔로워/구독자", "댓글 반응도(%)", "이메일", "인스타그램 핸들", "계정 상태", "두 플랫폼 동시 운영"];
+  headers.forEach((h, i) => {
+    const cell = ws.getCell(3, 2 + i); // B열부터 시작
+    cell.value = h;
+    cell.font = { name: "맑은 고딕", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF002060" } };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    cell.border = { top: thinWhite, left: thinWhite, right: thinWhite };
+  });
+
+  // 4행부터: 동일한 회색 테두리로 리스트 나열
+  rows.forEach((d, r) => {
+    const rowNum = 4 + r;
+    const link = channelLink(d);
+    const values = [
+      d.title,
+      d.platform === "youtube" ? "유튜브" : "인스타그램",
+      d.category,
+      link || "",
+      d.content_type || "",
+      d.features || "",
+      d.subscriber_count,
+      d.engagement_rate_pct,
+      d.email || "별도 확인이 필요함",
+      d.instagram_handle || "",
+      d.healthy_account ? "건강함" : "저조함",
+      d.cross_platform ? "예" : "아니오",
+    ];
+    values.forEach((v, i) => {
+      const cell = ws.getCell(rowNum, 2 + i);
+      if (i === 3 && link) {
+        cell.value = { text: link, hyperlink: link };
+        cell.font = { name: "맑은 고딕", size: 11, color: { argb: "FF0563C1" }, underline: true };
+      } else {
+        cell.value = v;
+        cell.font = { name: "맑은 고딕", size: 11 };
+      }
+      cell.alignment = { horizontal: "center", wrapText: i === 5 };
+      cell.border = { top: thinGray, bottom: thinGray, left: thinGray, right: thinGray };
+    });
+  });
+
+  // 표 바깥 영역(양옆 여백 열 A/N, 마감 행)은 화이트 선 처리
+  const lastDataRow = 3 + rows.length;
+  for (let r = 4; r <= lastDataRow; r++) {
+    ws.getCell(r, 1).border = { left: thinWhite, top: thinWhite, bottom: thinWhite }; // A열
+    ws.getCell(r, 14).border = { right: thinWhite, top: thinWhite, bottom: thinWhite }; // N열
+  }
+  const closeRow = lastDataRow + 1;
+  for (let c = 2; c <= 14; c++) {
+    ws.getCell(closeRow, c).border = { left: thinWhite, right: thinWhite, bottom: thinWhite };
+  }
+
+  const buffer = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const today = new Date().toISOString().slice(0, 10);
+  const safeTitle = (title || "인플루언서_서칭결과").replace(/[\\/:*?"<>|]/g, "").trim() || "인플루언서_서칭결과";
+  a.href = url;
+  a.download = `${safeTitle}_${today}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function renderDrawer() {
+  const drawerRoot = document.getElementById("drawer");
+  if (!state.selectedId) { drawerRoot.innerHTML = ""; return; }
+  const d = DATA.find(x => x.channel_id === state.selectedId);
+  if (!d) { drawerRoot.innerHTML = ""; state.selectedId = null; return; }
+
+  const ramp = avatarColor(d.title);
+  const [avatarBg, avatarFg] = RAMP_HEX[ramp];
+  const healthy = d.healthy_account;
+
+  const badges = [
+    d.platform === "youtube" ? "유튜브" : "인스타그램",
+    d.cross_platform ? "유튜브+인스타" : null,
+    d.category,
+  ].filter(Boolean).map(b => `<span style="padding:3px 9px;border-radius:999px;font-size:10px;font-weight:600;background:#EEECFC;color:#5B4FE0;">${b}</span>`).join(" ");
+
+  const externalLinks = [];
+  if (d.platform === "youtube") {
+    externalLinks.push({
+      label: "▶ 유튜브에서 보기",
+      url: `https://www.youtube.com/channel/${encodeURIComponent(d.channel_id)}`,
+      bg: "#FBEAEA", fg: "#D93B3B",
+    });
+  }
+  const igHandle = d.platform === "instagram" ? d.title : d.instagram_handle;
+  if (igHandle) {
+    externalLinks.push({
+      label: "📷 인스타그램에서 보기",
+      url: `https://www.instagram.com/${encodeURIComponent(igHandle)}/`,
+      bg: "#FBEAF0", fg: "#B0266B",
+    });
+  }
+  const externalLinksHtml = externalLinks.map(l => `
+    <a href="${l.url}" target="_blank" rel="noopener noreferrer" style="flex:1;text-align:center;padding:10px;border-radius:8px;background:${l.bg};color:${l.fg};font-size:12px;font-weight:600;text-decoration:none;">${l.label}</a>
+  `).join("");
+
+  const hasRealThumbs = d.platform === "youtube" && Array.isArray(d.recent_videos) && d.recent_videos.length > 0;
+  const thumbColors = ["#EEECFC", "#E3F6EA", "#FBEAF0", "#FAEEDA"];
+  const thumbs = hasRealThumbs
+    ? d.recent_videos.map(v => `
+        <a href="https://www.youtube.com/watch?v=${encodeURIComponent(v.videoId)}" target="_blank" rel="noopener noreferrer" style="flex:1;display:block;text-decoration:none;" title="${(v.title || "").replace(/"/g, "&quot;")}">
+          <div style="width:100%;aspect-ratio:16/9;border-radius:8px;background:#F2F2F4;overflow:hidden;">
+            <img src="${v.thumbnail}" alt="${(v.title || "").replace(/"/g, "&quot;")}" style="width:100%;height:100%;object-fit:cover;display:block;">
+          </div>
+        </a>`).join("")
+    : thumbColors.map(c => `<div style="flex:1;aspect-ratio:16/9;border-radius:8px;background:${c};"></div>`).join("");
+
+  drawerRoot.innerHTML = `
+    <div id="drawer-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:1000;"></div>
+    <div style="position:fixed;top:0;right:0;bottom:0;width:min(460px,100%);background:#FFFFFF;z-index:1001;padding:28px 32px;overflow-y:auto;box-shadow:-8px 0 24px rgba(0,0,0,0.12);display:flex;flex-direction:column;gap:24px;">
+      <div style="display:flex;align-items:center;">
+        <span style="flex:1;font-size:13px;font-weight:600;color:#6D6D76;">인플루언서 상세</span>
+        <button id="drawer-close" style="width:32px;height:32px;border-radius:8px;border:none;background:#F2F2F4;color:#6D6D76;font-size:13px;cursor:pointer;">✕</button>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div style="width:64px;height:64px;border-radius:50%;background:${avatarBg};color:${avatarFg};display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:600;flex-shrink:0;">${d.title.trim().charAt(0)}</div>
+        <div>
+          <div style="font-size:19px;font-weight:700;">${d.title}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">${badges}</div>
+        </div>
+      </div>
+
+      ${externalLinksHtml ? `<div style="display:flex;gap:8px;">${externalLinksHtml}</div>` : ""}
+
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="display:flex;gap:10px;">
+          <div style="flex:1;padding:14px 16px;border-radius:10px;background:#FAFAFB;">
+            <div style="font-size:11px;color:#A3A3AD;">팔로워/구독자</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;">${formatNumber(d.subscriber_count)}</div>
+          </div>
+          <div style="flex:1;padding:14px 16px;border-radius:10px;background:#FAFAFB;">
+            <div style="font-size:11px;color:#A3A3AD;" title="최근 업로드 영상 최대 8개의 평균 (댓글 수 ÷ 구독자 수 × 100)">댓글 반응도 ⓘ</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;">${d.engagement_rate_pct}%</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <div style="flex:1;padding:14px 16px;border-radius:10px;background:#FAFAFB;">
+            <div style="font-size:11px;color:#A3A3AD;">업로드/게시물 수</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;">${d.video_count.toLocaleString()}개</div>
+          </div>
+          <div style="flex:1;padding:14px 16px;border-radius:10px;background:#FAFAFB;">
+            <div style="font-size:11px;color:#A3A3AD;">누적 조회수</div>
+            <div style="font-size:18px;font-weight:700;margin-top:4px;">${formatNumber(d.view_count)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;background:${healthy ? "#E3F6EA" : "#FBEAEA"};">
+        <span style="padding:4px 10px;border-radius:999px;font-size:11px;font-weight:600;background:#FFFFFF;color:${healthy ? "#0F9D58" : "#D93B3B"};">${healthy ? "건강함" : "저조함"}</span>
+        <span style="font-size:12px;color:${healthy ? "#0B6B3A" : "#8A2323"};flex:1;">${healthy ? "댓글 반응도가 팔로워 규모 대비 기준치 이상입니다" : "댓글 반응도가 팔로워 규모 대비 기준치보다 낮습니다"}</span>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:12px;font-weight:600;color:#6D6D76;">연락처</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid #E6E6EA;border-radius:8px;">
+          <span style="font-size:12px;color:#A3A3AD;">이메일</span>
+          <span style="font-size:13px;font-weight:500;">${d.email || "별도 확인이 필요함"}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid #E6E6EA;border-radius:8px;">
+          <span style="font-size:12px;color:#A3A3AD;">인스타그램</span>
+          <span style="font-size:13px;font-weight:500;">${d.instagram_handle ? "@" + d.instagram_handle : "-"}</span>
+        </div>
+      </div>
+
+      ${d.email ? gmailSectionHtml(d.email) : ""}
+
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div style="font-size:12px;font-weight:600;color:#6D6D76;">최근 콘텐츠${hasRealThumbs ? "" : " (미리보기 없음)"}</div>
+        <div style="display:flex;gap:8px;">${thumbs}</div>
+        ${hasRealThumbs ? "" : `<div style="font-size:11px;color:#A3A3AD;">이 계정은 실시간 검색으로 가져온 게 아니라서 실제 썸네일 정보가 없어요.</div>`}
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-top:auto;padding-top:8px;">
+        <button id="drawer-save-list" style="padding:13px;border-radius:10px;border:none;background:#5B4FE0;color:#fff;font-size:14px;font-weight:600;cursor:pointer;">리스트에 저장</button>
+        <button id="drawer-contact-email" ${d.email ? "" : "disabled"} style="padding:13px;border-radius:10px;border:1px solid #E6E6EA;background:#FFFFFF;color:${d.email ? "#18181B" : "#A3A3AD"};font-size:14px;font-weight:600;cursor:${d.email ? "pointer" : "not-allowed"};">이메일로 연락하기${d.email ? "" : " (이메일 없음)"}</button>
+        <button id="drawer-exclude" style="padding:8px;border-radius:10px;border:none;background:transparent;color:#D93B3B;font-size:13px;font-weight:500;cursor:pointer;">후보에서 제외</button>
+      </div>
+    </div>`;
+
+  document.getElementById("drawer-close").onclick = () => { state.selectedId = null; renderDrawer(); };
+  document.getElementById("drawer-overlay").onclick = () => { state.selectedId = null; renderDrawer(); };
+
+  document.getElementById("drawer-save-list").onclick = () => {
+    state.selectedId = null;
+    renderDrawer();
+    openSaveListModal([d]);
+  };
+
+  const contactBtn = document.getElementById("drawer-contact-email");
+  if (contactBtn && d.email) {
+    contactBtn.onclick = () => {
+      const subject = encodeURIComponent(`[협업 제안] ${d.title}님께`);
+      const body = encodeURIComponent(`안녕하세요, ${d.title}님.\n\n협업 제안을 드리고 싶어 연락드립니다.\n\n감사합니다.`);
+      window.location.href = `mailto:${d.email}?subject=${subject}&body=${body}`;
+    };
+  }
+
+  document.getElementById("drawer-exclude").onclick = () => {
+    if (confirm(`"${d.title}"을(를) 후보에서 제외할까요? 목록에서 삭제됩니다.`)) {
+      const idx = DATA.findIndex(x => x.channel_id === d.channel_id);
+      if (idx !== -1) DATA.splice(idx, 1);
+      computeCrossPlatform();
+      saveToLocalStorage();
+      state.selectedId = null;
+      renderDrawer();
+      render();
+    }
+  };
+}
+
+function render() {
+  if (state.activeTab !== "search") {
+    state.selectedId = null;
+    document.getElementById("drawer").innerHTML = "";
+    const label = NAV_ITEMS.find(n => n.id === state.activeTab).label;
+    const bodyHtml = state.activeTab === "saved" ? savedListTabHtml()
+      : state.activeTab === "history" ? historyTabHtml()
+      : placeholderTabHtml(label);
+    document.getElementById("app").innerHTML = `
+      <div style="display:flex;min-height:520px;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;">
+        ${sidebarHtml()}
+        ${bodyHtml}
+      </div>`;
+    document.querySelectorAll("[data-nav]").forEach(el => {
+      el.onclick = () => {
+        state.activeTab = el.dataset.nav;
+        state.savedListDetailIdx = null;
+        state.listMenuOpenIdx = null;
+        render();
+      };
+    });
+    bindGmailSidebarButtons();
+    document.querySelectorAll("[data-history-idx]").forEach(btn => {
+      btn.onclick = () => {
+        const h = HISTORY_ITEMS[Number(btn.dataset.historyIdx)];
+        state.categories = new Set(h.categories);
+        state.platforms = new Set(h.platforms);
+        state.minSubs = h.minSubs;
+        state.maxSubs = h.maxSubs;
+        state.minEngagement = h.minEngagement;
+        state.activeTab = "search";
+        applyFilters();
+        render();
+      };
+    });
+    const listBack = document.getElementById("list-back");
+    if (listBack) listBack.onclick = () => { state.savedListDetailIdx = null; render(); };
+    document.querySelectorAll("[data-list-detail-export]").forEach(btn => {
+      btn.onclick = () => {
+        const l = SAVED_LISTS[Number(btn.dataset.listDetailExport)];
+        if (l.campaignMembers) { exportCampaignToExcel(l); return; }
+        const members = getListMembers(l);
+        openExportModal(members.length ? members : DATA.slice(0, l.count), l.name);
+      };
+    });
+    document.querySelectorAll("[data-campaign-export]").forEach(btn => {
+      btn.onclick = () => exportCampaignToExcel(SAVED_LISTS[Number(btn.dataset.campaignExport)]);
+    });
+    const newEmptyListBtn = document.getElementById("new-empty-list-btn");
+    if (newEmptyListBtn) newEmptyListBtn.onclick = () => openSaveListModal([]);
+    document.querySelectorAll("[data-list-view]").forEach(btn => {
+      btn.onclick = () => { state.savedListDetailIdx = Number(btn.dataset.listView); state.listMenuOpenIdx = null; render(); };
+    });
+    document.querySelectorAll("[data-list-menu]").forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const i = Number(btn.dataset.listMenu);
+        state.listMenuOpenIdx = state.listMenuOpenIdx === i ? null : i;
+        render();
+      };
+    });
+    document.querySelectorAll("[data-list-menu-outside]").forEach(el => {
+      el.onclick = () => { state.listMenuOpenIdx = null; render(); };
+    });
+    document.querySelectorAll("[data-list-export]").forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const l = SAVED_LISTS[Number(btn.dataset.listExport)];
+        state.listMenuOpenIdx = null;
+        render();
+        if (l.campaignMembers) { exportCampaignToExcel(l); return; }
+        const members = getListMembers(l);
+        openExportModal(members.length ? members : DATA.slice(0, l.count), l.name);
+      };
+    });
+    document.querySelectorAll("[data-list-delete]").forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const i = Number(btn.dataset.listDelete);
+        if (confirm(`"${SAVED_LISTS[i].name}" 리스트를 삭제할까요?`)) {
+          SAVED_LISTS.splice(i, 1);
+          saveToLocalStorage();
+        }
+        state.listMenuOpenIdx = null;
+        render();
+      };
+    });
+    return;
+  }
+
+  const filtered = getFiltered();
+  const displayed = balancedSlice(filtered, applied.limit);
+  const healthyCount = displayed.filter(d => d.healthy_account).length;
+  const crossCount = displayed.filter(d => d.cross_platform).length;
+
+  const rowsHtml = displayed.length ? displayed.map(d => `
+    <tr data-row-id="${d.channel_id}" style="border-bottom:1px solid #E6E6EA;cursor:pointer;" onmouseover="this.style.background='#FAFAFB'" onmouseout="this.style.background=''">
+      <td style="padding:8px 12px;">${avatarHtml(d)}</td>
+      <td style="padding:8px 12px;">
+        ${d.title}
+        ${d.cross_platform ? `<span style="margin-left:6px;font-size:11px;padding:1px 6px;border-radius:999px;background:#EEECFC;color:#5B4FE0;">유튜브+인스타</span>` : ""}
+      </td>
+      <td style="padding:8px 12px;color:#6D6D76;">${d.platform === "youtube" ? "유튜브" : "인스타그램"}</td>
+      <td style="padding:8px 12px;color:#6D6D76;">${d.category}</td>
+      <td style="padding:8px 12px;">${channelLink(d) ? `<a href="${channelLink(d)}" target="_blank" rel="noopener noreferrer" style="color:#5B4FE0;text-decoration:none;">바로가기 ↗</a>` : `<span style="color:#A3A3AD;">-</span>`}</td>
+      <td style="padding:8px 12px;color:#6D6D76;white-space:nowrap;">${d.content_type || "-"}</td>
+      <td style="padding:8px 12px;color:#6D6D76;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(d.features || "").replace(/"/g, "&quot;")}">${d.features ? d.features : "-"}</td>
+      <td style="padding:8px 12px;text-align:right;">${formatNumber(d.subscriber_count)}</td>
+      <td style="padding:8px 12px;text-align:right;">${d.engagement_rate_pct != null ? d.engagement_rate_pct + "%" : "-"}</td>
+      <td style="padding:8px 12px;">${d.email ? d.email : `<span style="color:#A3A3AD;font-size:12px;">별도 확인이 필요함</span>`}</td>
+      <td style="padding:8px 12px;text-align:center;">
+        ${d.healthy_account == null
+          ? `<span style="color:#A3A3AD;">-</span>`
+          : `<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;background:${d.healthy_account ? "#E3F6EA" : "#FBEAEA"};color:${d.healthy_account ? "#0F9D58" : "#D93B3B"};">
+          ${d.healthy_account ? "건강함" : "저조함"}
+        </span>`}
+      </td>
+    </tr>`).join("") : `<tr><td colspan="11" style="padding:2rem;text-align:center;color:#A3A3AD;">조건에 맞는 인플루언서가 없습니다. 필터를 조정해보세요.</td></tr>`;
+
+  document.getElementById("app").innerHTML = `
+  <div style="display:flex;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;">
+    ${sidebarHtml()}
+    <div style="flex:1;min-width:0;padding:28px 32px;background:#F6F6F8;">
+
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:1.25rem;flex-wrap:wrap;">
+      <div>
+        <h2 style="margin:0;">크리에이터 검색</h2>
+        <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">유튜브 · 인스타그램 인플루언서를 조건별로 검색하고 확인하세요 (현재 ${DATA.length}건 보유)</p>
+      </div>
+      <button id="f-reset" style="padding:10px 16px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;">
+        ↺ 필터 초기화
+      </button>
+    </div>
+
+    <div style="display:flex;flex-wrap:wrap;gap:1.25rem;padding:1rem;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:12px;margin-bottom:1rem;">
+      <div style="flex:1.6 1 260px;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">플랫폼</label>
+        <div style="display:flex;gap:8px;padding-top:4px;">
+          ${platformPill("youtube", "유튜브", state.platforms.has("youtube"))}
+          ${platformPill("instagram", "인스타그램", state.platforms.has("instagram"))}
+        </div>
+        <div style="font-size:11px;color:#A3A3AD;margin-top:4px;white-space:nowrap;">둘 다 선택 시 두 채널 동시 운영 계정만 표시</div>
+      </div>
+      <div style="flex:1 1 200px;position:relative;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">카테고리</label>
+        <button type="button" id="f-category-btn" style="width:100%;text-align:left;padding:6px 8px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;box-sizing:border-box;">
+          <span>${(() => {
+            if (state.categories.size === 0) return "전체";
+            const hasPercent = Object.entries(state.categoryPercents).some(([c, p]) => state.categories.has(c) && p > 0);
+            if (hasPercent) return `${state.categories.size}개 선택 · 비중 설정됨`;
+            return state.categories.size <= 2 ? [...state.categories].join(", ") : `${state.categories.size}개 선택`;
+          })()}</span>
+          <span style="color:#A3A3AD;">⌄</span>
+        </button>
+        ${state.categoryOpen ? `
+        <div id="cat-outside" style="position:fixed;inset:0;z-index:40;"></div>
+        <div style="position:absolute;top:calc(100% + 4px);left:0;min-width:300px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.10);padding:6px;z-index:50;max-height:320px;overflow-y:auto;">
+          <div style="padding:6px 10px 8px;font-size:11px;color:#A3A3AD;line-height:1.4;">체크한 카테고리 옆에 최소 비중(%)을 입력하면, 콘텐츠 구성이 그 비율 이상인 채널만 찾아요. 예: 뷰티 70 + 패션 30. 비워두면 카테고리만으로 필터링해요.</div>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;font-size:13px;cursor:pointer;border-radius:6px;font-weight:600;border-bottom:1px solid #F2F2F4;margin-bottom:2px;">
+            <input type="checkbox" id="cat-all" ${state.categories.size === 0 ? "checked" : ""}>
+            전체
+          </label>
+          ${CATEGORY_LIST.map(c => {
+            const checked = state.categories.has(c);
+            return `
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;flex:1;">
+              <input type="checkbox" data-cat="${c}" ${checked ? "checked" : ""}>
+              ${c}
+            </label>
+            ${checked ? `<input type="number" min="0" max="100" step="5" data-cat-percent="${c}" value="${state.categoryPercents[c] || ""}" placeholder="%" style="width:52px;padding:4px 6px;border-radius:6px;border:1px solid #E6E6EA;font-size:12px;box-sizing:border-box;">` : ""}
+          </div>`;
+          }).join("")}
+        </div>` : ""}
+      </div>
+      <div style="flex:1 1 160px;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">최소 팔로워/구독자: <span id="lbl-minsubs">${formatNumber(state.minSubs)}</span></label>
+        <input id="f-minsubs" class="af-range" type="range" min="0" max="500000" step="1000" value="${state.minSubs}" style="width:100%;${rangeBg(state.minSubs, 0, 500000)}">
+      </div>
+      <div style="flex:1 1 160px;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">최대 팔로워/구독자: <span id="lbl-maxsubs">${formatNumber(state.maxSubs)}</span></label>
+        <input id="f-maxsubs" class="af-range" type="range" min="0" max="10000000" step="1000" value="${state.maxSubs}" style="width:100%;${rangeBg(state.maxSubs, 0, 10000000)}">
+      </div>
+      <div style="flex:1 1 160px;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">최소 댓글 반응도 <span title="최근 업로드 영상 최대 8개의 평균 (댓글 수 ÷ 구독자 수 × 100)입니다. 좋아요는 포함하지 않습니다." style="cursor:help;color:#A3A3AD;">ⓘ</span>: <span id="lbl-engagement">${state.minEngagement.toFixed(1)}%</span></label>
+        <input id="f-engagement" class="af-range" type="range" min="0" max="6" step="0.1" value="${state.minEngagement}" style="width:100%;${rangeBg(state.minEngagement, 0, 6)}">
+      </div>
+      <div style="flex:1 1 160px;">
+        <label style="font-size:12px;color:#6D6D76;display:block;margin-bottom:4px;">표시할 계정 수 <span title="카테고리를 여러 개 선택했을 땐 한 카테고리가 결과를 독식하지 않도록, 선택한 카테고리마다 돌아가며 채운 뒤 정렬해서 보여줍니다." style="cursor:help;color:#A3A3AD;">ⓘ</span></label>
+        <input id="f-limit" type="number" min="1" value="${state.limit}" placeholder="전체"
+          style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;box-sizing:border-box;">
+      </div>
+      <div style="flex-basis:100%;margin:0 -1rem -1rem -1rem;">
+        <button id="f-apply" type="button" ${state.querying ? "disabled" : ""} style="width:100%;padding:14px;border:none;border-radius:${state.queryStatus ? "0" : "0 0 12px 12px"};background:#5B4FE0;color:#fff;font-size:14px;font-weight:600;cursor:${state.querying ? "not-allowed" : "pointer"};opacity:${state.querying ? 0.7 : 1};">${state.querying ? "🔴 실시간 검색 중..." : "조회하기"}</button>
+        ${state.queryStatus ? `<div style="padding:8px 16px;font-size:12px;color:#3C3489;background:#F6F6F8;border-radius:0 0 12px 12px;">${state.queryStatus}</div>` : ""}
+      </div>
+    </div>
+
+    ${applied.percentFallback ? `
+    <div style="padding:10px 14px;background:#FFF8E6;border:1px solid #F5DFA3;border-radius:10px;font-size:12px;color:#7A5B00;margin-bottom:1rem;">
+      ⚠️ 설정하신 비중 조건(${Object.entries(applied.categoryPercents).filter(([c, p]) => applied.categories.has(c) && p > 0).map(([c, p]) => `${c} ${p}%+`).join(", ")})을 동시에 만족하는 채널은 없었어요. 대신 선택한 카테고리(${[...applied.categories].join(", ")})에 해당하는 채널을 모두 보여드립니다.
+    </div>` : ""}
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:0.75rem;margin-bottom:1rem;">
+      <div style="padding:16px 18px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:12px;">
+        <div style="font-size:12px;color:#6D6D76;">표시 중</div>
+        <div style="font-size:24px;font-weight:700;margin-top:4px;">${displayed.length}개</div>
+        <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">조건 충족 ${filtered.length}개 중</div>
+      </div>
+      <div style="padding:16px 18px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:12px;">
+        <div style="font-size:12px;color:#6D6D76;display:flex;align-items:center;gap:4px;">두 플랫폼 동시 운영 <span title="유튜브 채널 설명란과 인스타그램 프로필 소개글에 서로의 링크(또는 동일 계정명)가 함께 적혀있는 경우로 판별합니다. 완전 자동 매칭이라 누락되거나 잘못 잡히는 경우가 있을 수 있어요." style="cursor:help;color:#A3A3AD;">ⓘ</span></div>
+        <div style="font-size:24px;font-weight:700;margin-top:4px;color:#5B4FE0;">${crossCount}개</div>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:0.75rem;">
+      <button id="f-email-toggle" type="button" style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid #E6E6EA;background:#FFFFFF;cursor:pointer;">
+        <span style="font-size:13px;color:#18181B;display:flex;align-items:center;gap:4px;">이메일 <span title="채널 설명란(또는 인스타 프로필 소개글)에 운영자가 직접 적어둔 이메일만 인식합니다. 비공개 채널은 '-'로 표시돼요." style="cursor:help;color:#A3A3AD;">ⓘ</span></span>
+        <span style="width:32px;height:18px;border-radius:999px;background:${state.emailOnly ? "#5B4FE0" : "#D9D9E0"};position:relative;flex-shrink:0;">
+          <span style="width:14px;height:14px;border-radius:50%;background:#FFFFFF;position:absolute;top:2px;left:${state.emailOnly ? 16 : 2}px;"></span>
+        </span>
+      </button>
+      <button id="f-healthy-toggle" type="button" style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid #E6E6EA;background:#FFFFFF;cursor:pointer;">
+        <span style="font-size:13px;color:#18181B;">검증완료 계정</span>
+        <span style="width:32px;height:18px;border-radius:999px;background:${state.healthyOnly ? "#5B4FE0" : "#D9D9E0"};position:relative;flex-shrink:0;">
+          <span style="width:14px;height:14px;border-radius:50%;background:#FFFFFF;position:absolute;top:2px;left:${state.healthyOnly ? 16 : 2}px;"></span>
+        </span>
+      </button>
+      <button id="f-save-list" ${displayed.length === 0 ? "disabled" : ""} style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:13px;font-weight:600;cursor:${displayed.length === 0 ? "not-allowed" : "pointer"};opacity:${displayed.length === 0 ? 0.5 : 1};">
+        ☆ 리스트에 저장
+      </button>
+      <button id="f-export" ${displayed.length === 0 ? "disabled" : ""} style="display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:13px;cursor:${displayed.length === 0 ? "not-allowed" : "pointer"};opacity:${displayed.length === 0 ? 0.5 : 1};">
+        ⬇ 엑셀로 내보내기 (${displayed.length}건)
+      </button>
+    </div>
+
+    <div style="border:1px solid #E6E6EA;border-radius:12px;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr style="background:#FFFFFF;border-bottom:1px solid #E6E6EA;">
+            <th style="padding:8px 12px;"></th>
+            ${thLabel("이름", "title")}
+            ${thLabel("플랫폼", "platform")}
+            ${thLabel("카테고리", "category")}
+            <th style="padding:8px 12px;font-weight:500;color:#6D6D76;">채널링크</th>
+            <th style="padding:8px 12px;font-weight:500;color:#6D6D76;">주력 콘텐츠 유형</th>
+            <th style="padding:8px 12px;font-weight:500;color:#6D6D76;cursor:help;" title="영상을 직접 시청/분석한 게 아니라, 채널명·소개글·최근 영상 제목의 키워드 패턴으로 콘텐츠 성격과 타겟층을 추정한 참고용 요약입니다.">특징 ⓘ</th>
+            ${thLabel("팔로워/구독자", "subscriber_count", "right")}
+            ${thLabel("댓글 반응도", "engagement_rate_pct", "right", "최근 업로드 영상 최대 8개의 평균 (댓글 수 ÷ 구독자 수 × 100). 좋아요는 포함하지 않습니다.")}
+            <th style="padding:8px 12px;font-weight:500;color:#6D6D76;">이메일</th>
+            ${thLabel("계정 상태", "healthy_account", "center", "구독자 규모별 댓글 반응도 기준치(1만 이하 0.5% · 10만 이하 0.25% · 초과 0.1%) 이상이면 '건강함'입니다.")}
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p style="font-size:12px;color:#A3A3AD;margin-top:8px;">이메일은 채널/프로필 설명에 공개된 경우만 표시됩니다. "유튜브+인스타" 배지는 설명란의 상호 링크로 매칭한 결과입니다.</p>
+
+    </div>
+  </div>
+  `;
+
+  document.querySelectorAll("[data-nav]").forEach(el => {
+    el.onclick = () => { state.activeTab = el.dataset.nav; render(); };
+  });
+  bindGmailSidebarButtons();
+  document.getElementById("f-reset").onclick = () => {
+    state.platforms = new Set(["youtube", "instagram"]);
+    state.categories = new Set();
+    state.categoryPercents = {};
+    state.minSubs = 0; state.maxSubs = 500000; state.minEngagement = 0;
+    state.healthyOnly = false; state.emailOnly = false; state.limit = 20;
+    state.queryStatus = "";
+    applyFilters();
+    render();
+  };
+
+  document.querySelectorAll("[data-platform]").forEach(btn => {
+    btn.onclick = () => togglePlatform(btn.dataset.platform);
+  });
+  const catBtn = document.getElementById("f-category-btn");
+  if (catBtn) catBtn.onclick = (e) => { e.stopPropagation(); state.categoryOpen = !state.categoryOpen; render(); };
+  const catOutside = document.getElementById("cat-outside");
+  if (catOutside) catOutside.onclick = () => { state.categoryOpen = false; render(); };
+  const catAll = document.getElementById("cat-all");
+  if (catAll) catAll.onclick = (e) => { e.stopPropagation(); state.categories = new Set(); state.categoryPercents = {}; render(); };
+  document.querySelectorAll("[data-cat]").forEach(cb => {
+    cb.onclick = (e) => {
+      e.stopPropagation();
+      const c = cb.dataset.cat;
+      if (cb.checked) state.categories.add(c);
+      else { state.categories.delete(c); delete state.categoryPercents[c]; }
+      render();
+    };
+  });
+  document.querySelectorAll("[data-cat-percent]").forEach(inp => {
+    inp.onclick = (e) => e.stopPropagation();
+    inp.onchange = (e) => {
+      const c = inp.dataset.catPercent;
+      const v = Number(e.target.value);
+      if (v > 0) state.categoryPercents[c] = Math.min(100, v);
+      else delete state.categoryPercents[c];
+      render();
+    };
+  });
+
+  // 슬라이더: 드래그 중엔 라벨/색상만 가볍게 갱신 (state에는 즉시 반영하되 테이블은 조회 전까지 그대로)
+  const minSubsInput = document.getElementById("f-minsubs");
+  minSubsInput.oninput = e => {
+    const v = Number(e.target.value);
+    state.minSubs = v;
+    document.getElementById("lbl-minsubs").textContent = formatNumber(v);
+    e.target.style.background = `linear-gradient(to right, #5B4FE0 0%, #5B4FE0 ${(v / 500000) * 100}%, #E6E6EA ${(v / 500000) * 100}%, #E6E6EA 100%)`;
+  };
+
+  const maxSubsInput = document.getElementById("f-maxsubs");
+  maxSubsInput.oninput = e => {
+    const v = Number(e.target.value);
+    state.maxSubs = v;
+    document.getElementById("lbl-maxsubs").textContent = formatNumber(v);
+    e.target.style.background = `linear-gradient(to right, #5B4FE0 0%, #5B4FE0 ${(v / 10000000) * 100}%, #E6E6EA ${(v / 10000000) * 100}%, #E6E6EA 100%)`;
+  };
+
+  const engagementInput = document.getElementById("f-engagement");
+  engagementInput.oninput = e => {
+    const v = Number(e.target.value);
+    state.minEngagement = v;
+    document.getElementById("lbl-engagement").textContent = v.toFixed(1) + "%";
+    e.target.style.background = `linear-gradient(to right, #5B4FE0 0%, #5B4FE0 ${(v / 6) * 100}%, #E6E6EA ${(v / 6) * 100}%, #E6E6EA 100%)`;
+  };
+
+  // 표시할 계정 수: 타이핑 중엔 재렌더 없이 값만 기록 (조회 버튼으로 적용)
+  document.getElementById("f-limit").oninput = e => {
+    const v = e.target.value.trim();
+    state.limit = v === "" ? null : Math.max(1, Number(v));
+  };
+
+  document.getElementById("f-healthy-toggle").onclick = () => { state.healthyOnly = !state.healthyOnly; render(); };
+  document.getElementById("f-email-toggle").onclick = () => { state.emailOnly = !state.emailOnly; render(); };
+
+  document.getElementById("f-apply").onclick = performQuery;
+
+  const saveListBtn = document.getElementById("f-save-list");
+  if (saveListBtn) saveListBtn.onclick = () => openSaveListModal(displayed);
+
+  const exportBtn = document.getElementById("f-export");
+  if (exportBtn) exportBtn.onclick = () => {
+    const title = state.categories.size === 1 ? `${[...state.categories][0]} 검색 결과` : "인플루언서 서칭 결과";
+    openExportModal(displayed, title);
+  };
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    th.onclick = () => toggleSort(th.dataset.sort);
+  });
+  document.querySelectorAll("tr[data-row-id]").forEach(tr => {
+    tr.onclick = () => { state.selectedId = tr.dataset.rowId; renderDrawer(); };
+  });
+
+  renderDrawer();
+}
+
+// 페이지 로드 시 이전에 저장해둔 데이터(검색 결과·저장한 리스트·히스토리)를 복원
+if (loadFromLocalStorage()) {
+  DATA.forEach(d => {
+    if (!d.category) d.category = d.keyword || "기타";
+    if (!d.content_type) d.content_type = inferContentType(d.title, d.description);
+    if (!d.category_mix) d.category_mix = { [d.category]: 100 };
+    if (!d.features) d.features = generateFeatures(d);
+  });
+  computeCrossPlatform();
+}
+
+render();
+</script>
+
+</body>
+</html>
