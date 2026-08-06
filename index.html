@@ -428,16 +428,24 @@ function disconnectGoogle() {
 // (Google이 이미 동의한 세션을 기억하고 있으면 성공, 아니면 그냥 실패하고 수동 연결 버튼 그대로 노출)
 function trySilentGmailReconnect(retries = 20) {
   if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com") return;
-  if (localStorage.getItem("gmail_previously_connected") !== "1") return;
-  if (typeof google === "undefined" || !google.accounts?.oauth2) {
-    if (retries > 0) setTimeout(() => trySilentGmailReconnect(retries - 1), 300);
+  if (localStorage.getItem("gmail_previously_connected") !== "1") {
+    console.log("Gmail 자동 재연결: 이전에 연결한 기록 없음 (건너뜀)");
     return;
   }
+  if (typeof google === "undefined" || !google.accounts?.oauth2) {
+    if (retries > 0) setTimeout(() => trySilentGmailReconnect(retries - 1), 300);
+    else console.warn("Gmail 자동 재연결: 구글 로그인 스크립트를 끝내 못 불러옴");
+    return;
+  }
+  console.log("Gmail 자동 재연결 시도 중...");
   state.gmailTokenClient = google.accounts.oauth2.initTokenClient({
     client_id: GOOGLE_CLIENT_ID,
     scope: GMAIL_SCOPE,
     callback: async (resp) => {
-      if (resp.error) return; // 조용히 실패 — 팝업 없이 그냥 "연결" 버튼이 그대로 보이게 둠
+      if (resp.error) {
+        console.warn("Gmail 자동 재연결 실패:", resp.error, resp.error_description || resp.error_subtype || "");
+        return; // 조용히 실패 — 팝업 없이 그냥 "연결" 버튼이 그대로 보이게 둠
+      }
       state.gmailToken = resp.access_token;
       try {
         const profile = await gmailFetch("profile");
