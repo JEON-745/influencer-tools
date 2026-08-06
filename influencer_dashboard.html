@@ -9,6 +9,9 @@
 <body>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <style>
   .af-range { -webkit-appearance: none; appearance: none; height: 6px; border-radius: 999px; outline: none; cursor: pointer; }
   .af-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #5B4FE0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
@@ -77,6 +80,124 @@ const YOUTUBE_API_KEY = "AIzaSyBYEKJz9QHyT0DRwQkQzmAOYu9jbYyKb1E";
 // 6. 발급된 클라이언트 ID를 아래에 붙여넣기
 const GOOGLE_CLIENT_ID = "1005084040906-7dnven36ta4pv6rqf7ebcmlthl257m80.apps.googleusercontent.com";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"; // 읽기 전용 — 발송/삭제 권한 없음
+
+// ===== 팀 공유 동기화 (Firebase Realtime Database) =====
+// 설정 방법:
+// 1. https://console.firebase.google.com → "프로젝트 추가" → 기존 Google Cloud 프로젝트(유튜브 API 만든 그 프로젝트) 선택해서 연결
+// 2. 왼쪽 메뉴 "빌드" → "Realtime Database" → "데이터베이스 만들기" (위치는 아무거나, 보안 규칙은 "테스트 모드"로 시작)
+// 3. 왼쪽 메뉴 "빌드" → "Authentication" → "Sign-in method" → "Google" 제공업체 사용 설정
+// 4. 프로젝트 설정(톱니바퀴) → "일반" 탭 맨 아래 "내 앱" → 웹 앱 추가(</> 아이콘) → 이름 아무거나 입력
+// 5. 나오는 firebaseConfig 객체를 아래 FIREBASE_CONFIG에 통째로 붙여넣기
+// 6. Realtime Database → "규칙" 탭에서 아래로 교체 (로그인한 사람만 읽기/쓰기 가능):
+//    { "rules": { "sharedState": { ".read": "auth != null", ".write": "auth != null" } } }
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBiasHWHGRpO9pxeNVgozgEcxlYbU-NPY0",
+  authDomain: "influencer-search-75349.firebaseapp.com",
+  databaseURL: "https://influencer-search-75349-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "influencer-search-75349",
+  storageBucket: "influencer-search-75349.firebasestorage.app",
+  messagingSenderId: "280452292394",
+  appId: "1:280452292394:web:246f9ace4bde87e2cfc853",
+};
+
+const SESSION_ID = Math.random().toString(36).slice(2); // 내가 방금 쓴 변경을 다시 나한테 반영 안 하려는 용도
+let firebaseEnabled = false;
+let fbDatabase = null;
+let fbAuth = null;
+let firebaseSyncStarted = false;
+
+try {
+  if (typeof firebase !== "undefined" && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.apiKey !== "YOUR_FIREBASE_API_KEY") {
+    firebase.initializeApp(FIREBASE_CONFIG);
+    fbDatabase = firebase.database();
+    fbAuth = firebase.auth();
+    firebaseEnabled = true;
+  }
+} catch (e) {
+  console.warn("Firebase 초기화 실패:", e);
+}
+
+// 팀 동기화 로그인 (Gmail 연결과는 별개 — id_token 기반이라 접근 방식이 다름)
+function connectTeamSync() {
+  if (!firebaseEnabled) {
+    alert("아직 팀 동기화가 설정되지 않았어요. 코드 상단의 FIREBASE_CONFIG를 채워주세요.");
+    return;
+  }
+  if (!window.google?.accounts?.id) {
+    alert("구글 로그인 스크립트를 아직 불러오는 중이에요. 잠시 후 다시 시도해주세요.");
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    callback: async (response) => {
+      try {
+        const credential = firebase.auth.GoogleAuthProvider.credential(response.credential);
+        await fbAuth.signInWithCredential(credential);
+      } catch (e) {
+        alert("팀 동기화 로그인 실패: " + e.message);
+      }
+    },
+  });
+  google.accounts.id.prompt();
+}
+
+function disconnectTeamSync() {
+  if (fbAuth) fbAuth.signOut();
+  state.teamSyncUser = null;
+  render();
+}
+
+// 로그인 성공 시 1회만 실행 — 공유 데이터 실시간 구독 시작
+function startFirebaseSync() {
+  if (!firebaseEnabled || !fbDatabase || firebaseSyncStarted) return;
+  firebaseSyncStarted = true;
+
+  const ref = fbDatabase.ref("sharedState/main");
+  ref.on("value", (snapshot) => {
+    const val = snapshot.val();
+    if (!val) {
+      // 팀에서 아직 아무도 데이터를 올린 적이 없으면, 내가 가진 걸 최초 데이터로 올림
+      pushToFirebase();
+      return;
+    }
+    if (val.updatedBy === SESSION_ID) return; // 내가 방금 쓴 변경은 다시 반영 안 함 (에코 방지)
+
+    if (Array.isArray(val.data)) DATA = val.data;
+    if (Array.isArray(val.savedLists)) SAVED_LISTS = val.savedLists;
+    if (Array.isArray(val.history)) HISTORY_ITEMS = val.history;
+    DATA.forEach(d => {
+      if (!d.category) d.category = d.keyword || "기타";
+      if (!d.content_type) d.content_type = inferContentType(d.title, d.description);
+      if (!d.category_mix) d.category_mix = { [d.category]: 100 };
+      if (!d.features) d.features = generateFeatures(d);
+    });
+    computeCrossPlatform();
+    saveToLocalStorage(false); // 받은 데이터를 로컬에도 백업 (팀 서버로 다시 안 올림)
+    render();
+  }, (err) => {
+    console.warn("Firebase 동기화 오류:", err.message);
+  });
+}
+
+function pushToFirebase() {
+  if (!firebaseEnabled || !fbDatabase || !fbAuth?.currentUser) return;
+  fbDatabase.ref("sharedState/main").set({
+    data: DATA,
+    savedLists: SAVED_LISTS,
+    history: HISTORY_ITEMS,
+    updatedAt: Date.now(),
+    updatedBy: SESSION_ID,
+    updatedByEmail: fbAuth.currentUser.email,
+  }).catch(e => console.warn("Firebase 저장 실패:", e.message));
+}
+
+if (firebaseEnabled) {
+  fbAuth.onAuthStateChanged(user => {
+    state.teamSyncUser = user ? { email: user.email, name: user.displayName } : null;
+    if (user) startFirebaseSync();
+    render();
+  });
+}
 
 // 채널명+설명(bio)에서 주력 콘텐츠 유형을 키워드 기반으로 추론 (실제 영상 콘텐츠 분석이 아닌 근사치)
 const CONTENT_TYPE_KEYWORDS = {
@@ -190,7 +311,7 @@ computeCrossPlatform();
 // ===== 로컬 저장 (브라우저에 데이터 보관 — 새로고침/재접속해도 검색 결과·저장한 리스트·히스토리 유지) =====
 const STORAGE_KEY = "influencer_tools_state_v1";
 
-function saveToLocalStorage() {
+function saveToLocalStorage(alsoSyncTeam = true) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       data: DATA,
@@ -201,6 +322,8 @@ function saveToLocalStorage() {
   } catch (e) {
     console.warn("로컬 저장 실패:", e);
   }
+
+  if (alsoSyncTeam) pushToFirebase();
 }
 
 function loadFromLocalStorage() {
@@ -839,6 +962,7 @@ let state = {
   gmailConversation: null,
   gmailConversationLoading: false,
   gmailConversationError: null,
+  teamSyncUser: null,
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -1032,6 +1156,10 @@ function bindGmailSidebarButtons() {
   if (connectBtn) connectBtn.onclick = () => connectGoogle();
   const disconnectBtn = document.querySelector("[data-gmail-disconnect]");
   if (disconnectBtn) disconnectBtn.onclick = () => disconnectGoogle();
+  const teamConnectBtn = document.querySelector("[data-team-sync-connect]");
+  if (teamConnectBtn) teamConnectBtn.onclick = () => connectTeamSync();
+  const teamDisconnectBtn = document.querySelector("[data-team-sync-disconnect]");
+  if (teamDisconnectBtn) teamDisconnectBtn.onclick = () => disconnectTeamSync();
 }
 
 function sidebarHtml() {
@@ -1046,11 +1174,18 @@ function sidebarHtml() {
          <button data-gmail-disconnect style="padding:6px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#6D6D76;font-size:11px;cursor:pointer;">연결 해제</button>
        </div>`
     : `<button data-gmail-connect style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">📧 Gmail 연결</button>`;
+  const teamSyncStatus = state.teamSyncUser
+    ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:12px;">
+         <div style="font-size:11px;color:#A3A3AD;">👥 팀 동기화 연결됨</div>
+         <div style="font-size:12px;color:#18181B;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${state.teamSyncUser.email}</div>
+         <button data-team-sync-disconnect style="padding:6px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#6D6D76;font-size:11px;cursor:pointer;">연결 해제</button>
+       </div>`
+    : `<button data-team-sync-connect style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">👥 팀 동기화 연결</button>`;
   return `
     <div style="width:220px;flex-shrink:0;padding:28px 20px;border-right:1px solid #E6E6EA;display:flex;flex-direction:column;gap:24px;background:#FFFFFF;">
       <div style="font-size:18px;font-weight:700;line-height:1.25;">Influencer<br>Tools</div>
       <div style="display:flex;flex-direction:column;gap:4px;">${items}</div>
-      <div style="margin-top:auto;padding-top:16px;border-top:1px solid #E6E6EA;">${gmailStatus}</div>
+      <div style="margin-top:auto;padding-top:16px;border-top:1px solid #E6E6EA;">${gmailStatus}${teamSyncStatus}</div>
     </div>`;
 }
 
