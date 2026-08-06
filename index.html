@@ -401,6 +401,7 @@ function connectGoogle(onConnected) {
       callback: async (resp) => {
         if (resp.error) { alert("구글 로그인 실패: " + resp.error); return; }
         state.gmailToken = resp.access_token;
+        localStorage.setItem("gmail_previously_connected", "1");
         try {
           const profile = await gmailFetch("profile");
           state.gmailAccountEmail = profile.emailAddress;
@@ -408,7 +409,7 @@ function connectGoogle(onConnected) {
         render();
         if (onConnected) onConnected();
       },
-    });
+  });
   }
   state.gmailTokenClient.requestAccessToken();
 }
@@ -419,7 +420,33 @@ function disconnectGoogle() {
   }
   state.gmailToken = null;
   state.gmailAccountEmail = null;
+  localStorage.removeItem("gmail_previously_connected");
   render();
+}
+
+// 새로고침/재접속 시 이전에 Gmail을 연결했던 적이 있으면 팝업 없이 조용히 재연결 시도
+// (Google이 이미 동의한 세션을 기억하고 있으면 성공, 아니면 그냥 실패하고 수동 연결 버튼 그대로 노출)
+function trySilentGmailReconnect(retries = 20) {
+  if (!GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID === "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com") return;
+  if (localStorage.getItem("gmail_previously_connected") !== "1") return;
+  if (typeof google === "undefined" || !google.accounts?.oauth2) {
+    if (retries > 0) setTimeout(() => trySilentGmailReconnect(retries - 1), 300);
+    return;
+  }
+  state.gmailTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: GMAIL_SCOPE,
+    callback: async (resp) => {
+      if (resp.error) return; // 조용히 실패 — 팝업 없이 그냥 "연결" 버튼이 그대로 보이게 둠
+      state.gmailToken = resp.access_token;
+      try {
+        const profile = await gmailFetch("profile");
+        state.gmailAccountEmail = profile.emailAddress;
+      } catch (e) { /* 이메일 표시는 실패해도 토큰은 유효할 수 있음 */ }
+      render();
+    },
+  });
+  state.gmailTokenClient.requestAccessToken({ prompt: "" });
 }
 
 async function gmailFetch(path, params) {
@@ -2318,6 +2345,7 @@ if (loadFromLocalStorage()) {
 }
 
 render();
+trySilentGmailReconnect();
 
 // 로딩 스플래시 화면: 최소 2~2.5초 정도 보여준 뒤 부드럽게 사라짐
 setTimeout(() => {
