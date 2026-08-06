@@ -1028,6 +1028,7 @@ let state = {
   gmailConversationError: null,
   teamSyncUser: null,
   teamOnlineUsers: [],
+  sidebarDropdownOpen: null, // null | "gmail" | "team"
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -1218,13 +1219,25 @@ function rangeBg(value, min, max) {
 
 function bindGmailSidebarButtons() {
   const connectBtn = document.querySelector("[data-gmail-connect]");
-  if (connectBtn) connectBtn.onclick = () => connectGoogle();
+  if (connectBtn) connectBtn.onclick = () => { connectGoogle(); state.sidebarDropdownOpen = null; };
   const disconnectBtn = document.querySelector("[data-gmail-disconnect]");
-  if (disconnectBtn) disconnectBtn.onclick = () => disconnectGoogle();
+  if (disconnectBtn) disconnectBtn.onclick = () => { disconnectGoogle(); state.sidebarDropdownOpen = null; };
   const teamConnectBtn = document.querySelector("[data-team-sync-connect]");
-  if (teamConnectBtn) teamConnectBtn.onclick = () => connectTeamSync();
+  if (teamConnectBtn) teamConnectBtn.onclick = () => { connectTeamSync(); state.sidebarDropdownOpen = null; };
   const teamDisconnectBtn = document.querySelector("[data-team-sync-disconnect]");
-  if (teamDisconnectBtn) teamDisconnectBtn.onclick = () => disconnectTeamSync();
+  if (teamDisconnectBtn) teamDisconnectBtn.onclick = () => { disconnectTeamSync(); state.sidebarDropdownOpen = null; };
+
+  document.querySelectorAll("[data-icon-toggle]").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const key = btn.dataset.iconToggle;
+      state.sidebarDropdownOpen = state.sidebarDropdownOpen === key ? null : key;
+      render();
+    };
+  });
+  document.querySelectorAll("[data-dropdown-outside]").forEach(el => {
+    el.onclick = () => { state.sidebarDropdownOpen = null; render(); };
+  });
 }
 
 function sidebarHtml() {
@@ -1232,44 +1245,75 @@ function sidebarHtml() {
     const active = state.activeTab === item.id;
     return `<div data-nav="${item.id}" style="padding:10px 12px;border-radius:8px;font-size:14px;cursor:pointer;background:${active ? "#EEECFC" : "transparent"};color:${active ? "#5B4FE0" : "#6D6D76"};font-weight:${active ? 600 : 400};">${item.label}</div>`;
   }).join("");
-  const gmailStatus = state.gmailToken
-    ? `<div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;background:#F6F6F8;">
-         <span style="font-size:13px;flex-shrink:0;">📧</span>
-         <div style="flex:1;min-width:0;font-size:11px;color:#18181B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(state.gmailAccountEmail || "")}">${escapeHtml(state.gmailAccountEmail || "Gmail")}</div>
-         <button data-gmail-disconnect title="연결 해제" style="flex-shrink:0;width:20px;height:20px;border-radius:6px;border:none;background:transparent;color:#A3A3AD;font-size:14px;line-height:1;cursor:pointer;">×</button>
-       </div>`
-    : `<button data-gmail-connect style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">📧 Gmail 연결</button>`;
+
+  // 아이콘 버튼 (연결 안 됐으면 회색 테두리, 연결됐으면 보라색 채움) + 클릭하면 드롭다운으로 계정/해제
+  const gmailOpen = state.sidebarDropdownOpen === "gmail";
+  const gmailIcon = `
+    <div style="position:relative;flex:1;">
+      <button data-icon-toggle="gmail" title="${state.gmailToken ? escapeHtml(state.gmailAccountEmail || "Gmail 연결됨") : "Gmail 연결"}"
+        style="width:100%;height:36px;border-radius:10px;border:1px solid ${state.gmailToken ? "transparent" : "#E6E6EA"};background:${state.gmailToken ? "#5B4FE0" : "#FFFFFF"};color:${state.gmailToken ? "#FFFFFF" : "#6D6D76"};font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        Gmail 연동
+      </button>
+      ${gmailOpen ? `
+      <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
+      <div style="position:absolute;top:calc(100% + 6px);left:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+        <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">Gmail</div>
+        ${state.gmailToken ? `
+          <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.gmailAccountEmail || "연결됨")}</div>
+          <button data-gmail-disconnect style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#D93B3B;font-size:12px;cursor:pointer;">연결 해제</button>
+        ` : `
+          <div style="font-size:12px;color:#6D6D76;margin-bottom:10px;">메일 기록을 보려면 연결하세요</div>
+          <button data-gmail-connect style="width:100%;padding:7px 10px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">Gmail 연결하기</button>
+        `}
+      </div>` : ""}
+    </div>`;
+
+  const teamOpen = state.sidebarDropdownOpen === "team";
+  const teamIcon = `
+    <div style="position:relative;flex:1;">
+      <button data-icon-toggle="team" title="${state.teamSyncUser ? escapeHtml(state.teamSyncUser.email) : "팀 동기화 연결"}"
+        style="width:100%;height:36px;border-radius:10px;border:1px solid ${state.teamSyncUser ? "transparent" : "#E6E6EA"};background:${state.teamSyncUser ? "#5B4FE0" : "#FFFFFF"};color:${state.teamSyncUser ? "#FFFFFF" : "#6D6D76"};font-size:11px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+        팀 동기화
+      </button>
+      ${teamOpen ? `
+      <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
+      <div style="position:absolute;top:calc(100% + 6px);right:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+        <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">팀 동기화</div>
+        ${state.teamSyncUser ? `
+          <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.teamSyncUser.email)}</div>
+          <button data-team-sync-disconnect style="width:100%;padding:7px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#D93B3B;font-size:12px;cursor:pointer;">연결 해제</button>
+        ` : `
+          <div style="font-size:12px;color:#6D6D76;margin-bottom:10px;">검색 결과·리스트를 팀과 실시간 공유하세요</div>
+          <button data-team-sync-connect style="width:100%;padding:7px 10px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:12px;font-weight:600;cursor:pointer;">팀 동기화 연결하기</button>
+        `}
+      </div>` : ""}
+    </div>`;
 
   const onlineUsers = state.teamOnlineUsers || [];
-  const onlineAvatarStack = onlineUsers.length
-    ? `<div style="display:flex;align-items:center;gap:6px;margin-top:6px;padding-left:2px;">
+  const onlineCard = onlineUsers.length
+    ? `<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:10px;background:linear-gradient(135deg, #EEECFC, #E6F1FB);">
          <div style="display:flex;">
            ${onlineUsers.slice(0, 5).map((u, i) => {
              const label = u.name || u.email || "?";
              const ramp = avatarColor(label);
              const [bg, fg] = RAMP_HEX[ramp];
-             return `<div title="${escapeHtml(label)}" style="width:20px;height:20px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:2px solid #FFFFFF;margin-left:${i === 0 ? 0 : -6}px;">${escapeHtml(label.trim().charAt(0))}</div>`;
+             return `<div title="${escapeHtml(label)}" style="width:22px;height:22px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:2px solid #FFFFFF;margin-left:${i === 0 ? 0 : -7}px;">${escapeHtml(label.trim().charAt(0))}</div>`;
            }).join("")}
          </div>
-         <span style="font-size:10px;color:#A3A3AD;">🟢 ${onlineUsers.length}명 접속 중</span>
+         <div style="font-size:11px;color:#3C3489;font-weight:500;">
+           <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22C55E;margin-right:4px;"></span>${onlineUsers.length}명 접속 중
+         </div>
        </div>`
     : "";
-  const teamSyncStatus = state.teamSyncUser
-    ? `<div>
-         <div style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;background:#F6F6F8;">
-           <span style="font-size:13px;flex-shrink:0;">👥</span>
-           <div style="flex:1;min-width:0;font-size:11px;color:#18181B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(state.teamSyncUser.email)}">${escapeHtml(state.teamSyncUser.email)}</div>
-           <button data-team-sync-disconnect title="연결 해제" style="flex-shrink:0;width:20px;height:20px;border-radius:6px;border:none;background:transparent;color:#A3A3AD;font-size:14px;line-height:1;cursor:pointer;">×</button>
-         </div>
-         ${onlineAvatarStack}
-       </div>`
-    : `<button data-team-sync-connect style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">👥 팀 동기화 연결</button>`;
 
   return `
     <div style="width:220px;flex-shrink:0;padding:28px 20px;border-right:1px solid #E6E6EA;display:flex;flex-direction:column;gap:24px;background:#FFFFFF;">
       <div style="font-size:18px;font-weight:700;line-height:1.25;">Influencer<br>Tools</div>
       <div style="display:flex;flex-direction:column;gap:4px;">${items}</div>
-      <div style="margin-top:auto;padding-top:14px;border-top:1px solid #E6E6EA;display:flex;flex-direction:column;gap:6px;">${gmailStatus}${teamSyncStatus}</div>
+      <div style="margin-top:auto;padding-top:14px;border-top:1px solid #E6E6EA;display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;gap:8px;">${gmailIcon}${teamIcon}</div>
+        ${onlineCard}
+      </div>
     </div>`;
 }
 
