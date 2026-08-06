@@ -1256,7 +1256,7 @@ function sidebarHtml() {
       </button>
       ${gmailOpen ? `
       <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
-      <div style="position:absolute;top:calc(100% + 6px);left:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+      <div style="position:absolute;bottom:calc(100% + 6px);left:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
         <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">Gmail</div>
         ${state.gmailToken ? `
           <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.gmailAccountEmail || "연결됨")}</div>
@@ -1277,7 +1277,7 @@ function sidebarHtml() {
       </button>
       ${teamOpen ? `
       <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
-      <div style="position:absolute;top:calc(100% + 6px);right:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+      <div style="position:absolute;bottom:calc(100% + 6px);right:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
         <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">팀 동기화</div>
         ${state.teamSyncUser ? `
           <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.teamSyncUser.email)}</div>
