@@ -14,7 +14,50 @@
   .af-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #5B4FE0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
   .af-range::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #FFFFFF; border: 2px solid #5B4FE0; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.15); }
   .af-range::-moz-range-track { height: 6px; border-radius: 999px; background: transparent; }
+
+  #loading-screen {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #F6F6F8;
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.4s ease;
+  }
+  #loading-screen.fade-out { opacity: 0; pointer-events: none; }
+  .loading-logo {
+    width: 56px; height: 56px; border-radius: 16px;
+    background: #5B4FE0; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 800;
+    margin: 0 auto 16px;
+    animation: loading-pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes loading-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(0.88); opacity: 0.75; }
+  }
+  .loading-dots span {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: #5B4FE0; margin: 0 3px; animation: loading-dot 1.2s ease-in-out infinite;
+  }
+  .loading-dots span:nth-child(2) { animation-delay: 0.15s; }
+  .loading-dots span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes loading-dot {
+    0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-3px); }
+  }
+
+  @keyframes tab-fade-slide-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .tab-anim { animation: tab-fade-slide-in 0.35s ease-out; }
 </style>
+<div id="loading-screen">
+  <div style="text-align:center;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+    <div class="loading-logo">IT</div>
+    <div style="font-size:15px;font-weight:700;color:#18181B;">Influencer Tools</div>
+    <div class="loading-dots" style="margin-top:10px;"><span></span><span></span><span></span></div>
+  </div>
+</div>
 <div id="app" style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #18181B; background:#F6F6F8; padding:16px; border-radius:16px; position:relative;"></div>
 <div id="drawer"></div>
 <div id="export-modal"></div>
@@ -32,7 +75,7 @@ const YOUTUBE_API_KEY = "AIzaSyBYEKJz9QHyT0DRwQkQzmAOYu9jbYyKb1E";
 // 4. "사용자 인증 정보" → "+ 사용자 인증 정보 만들기" → "OAuth 클라이언트 ID" → 유형 "웹 애플리케이션"
 // 5. "승인된 자바스크립트 원본"에 GitHub Pages 주소 추가 (예: https://jeon-745.github.io)
 // 6. 발급된 클라이언트 ID를 아래에 붙여넣기
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "1005084040906-7dnven36ta4pv6rqf7ebcmlthl257m80.apps.googleusercontent.com";
 const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"; // 읽기 전용 — 발송/삭제 권한 없음
 
 // 채널명+설명(bio)에서 주력 콘텐츠 유형을 키워드 기반으로 추론 (실제 영상 콘텐츠 분석이 아닌 근사치)
@@ -288,6 +331,279 @@ async function fetchGmailThreadsFor(email) {
   return messages;
 }
 
+// ===== 메일함 (연락처 목록 + 채팅형 대화 보기) =====
+
+// 같은 파라미터를 여러 번 넣어야 하는 호출(metadataHeaders 등)용 — gmailFetch는 파라미터당 값 1개만 지원
+async function gmailFetchMulti(path, paramPairs) {
+  const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`);
+  paramPairs.forEach(([k, v]) => url.searchParams.append(k, v));
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${state.gmailToken}` } });
+  const json = await res.json();
+  if (!res.ok) {
+    const msg = json?.error?.message || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+function base64UrlDecode(str) {
+  try {
+    const base64 = str.replace(/-/g, "+").replace(/_/g, "/");
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes);
+  } catch (e) {
+    return "";
+  }
+}
+
+// Gmail 메시지 payload(멀티파트 MIME 구조)를 재귀 탐색해서 본문 텍스트를 뽑아냄
+function extractMessageBody(payload) {
+  if (!payload) return "";
+  if (payload.mimeType === "text/plain" && payload.body?.data) {
+    return base64UrlDecode(payload.body.data);
+  }
+  if (payload.parts) {
+    const plainPart = payload.parts.find(p => p.mimeType === "text/plain");
+    if (plainPart) return extractMessageBody(plainPart);
+    const htmlPart = payload.parts.find(p => p.mimeType === "text/html");
+    if (htmlPart) {
+      const html = base64UrlDecode(htmlPart.body?.data || "");
+      const div = document.createElement("div");
+      div.innerHTML = html;
+      return div.textContent || div.innerText || "";
+    }
+    for (const part of payload.parts) {
+      const nested = extractMessageBody(part);
+      if (nested) return nested;
+    }
+  }
+  if (payload.mimeType === "text/html" && payload.body?.data) {
+    const html = base64UrlDecode(payload.body.data);
+    const div = document.createElement("div");
+    div.innerHTML = html;
+    return div.textContent || div.innerText || "";
+  }
+  return "";
+}
+
+// "이름 <email@x.com>" 또는 "email@x.com" 형태의 헤더 값을 이름/이메일로 분리
+function parseEmailHeader(value) {
+  if (!value) return { name: "", email: "" };
+  const match = value.match(/^(.*?)<(.+)>$/);
+  if (match) {
+    return { name: match[1].trim().replace(/^"|"$/g, ""), email: match[2].trim().toLowerCase() };
+  }
+  return { name: "", email: value.trim().toLowerCase() };
+}
+
+// 최근 메일들을 훑어서 "누구랑 주고받았는지" 연락처 목록을 만듦
+async function loadGmailContacts() {
+  state.gmailContactsLoading = true;
+  state.gmailContactsError = null;
+  render();
+
+  try {
+    // DATA에 이메일이 확인된 인플루언서들만 대상으로 검색 (일반 메일함 전체 스캔이 아니라
+    // "우리가 알고 있는 인플루언서"와 실제로 주고받은 메일이 있는지만 확인)
+    const influencerEmails = [...new Map(
+      DATA.filter(d => d.email).map(d => [d.email.toLowerCase(), d.title])
+    ).entries()];
+
+    const contacts = [];
+    for (const [email, name] of influencerEmails) {
+      const listData = await gmailFetch("messages", { q: `from:${email} OR to:${email}`, maxResults: 1 });
+      const count = listData.resultSizeEstimate || 0;
+      if (!count || !listData.messages?.length) continue;
+
+      const msg = await gmailFetch(`messages/${listData.messages[0].id}`, { format: "minimal" });
+      contacts.push({
+        email,
+        name: name || email,
+        count,
+        lastDate: new Date(Number(msg.internalDate)),
+      });
+    }
+
+    state.gmailContacts = contacts.sort((a, b) => b.lastDate - a.lastDate);
+  } catch (e) {
+    state.gmailContactsError = e.message;
+  }
+
+  state.gmailContactsLoading = false;
+  render();
+}
+
+// 특정 상대와 주고받은 메일 전체를 시간순으로 가져와 채팅형으로 보여줄 데이터 구성
+async function loadGmailConversation(email) {
+  state.selectedContactEmail = email;
+  state.gmailConversation = null;
+  state.gmailConversationLoading = true;
+  state.gmailConversationError = null;
+  render();
+
+  try {
+    const listData = await gmailFetch("messages", { q: `from:${email} OR to:${email}`, maxResults: 20 });
+    const ids = (listData.messages || []).map(m => m.id);
+    const myEmail = (state.gmailAccountEmail || "").toLowerCase();
+    const messages = [];
+
+    for (const id of ids) {
+      const msg = await gmailFetch(`messages/${id}`, { format: "full" });
+      const from = parseEmailHeader(gmailHeader(msg.payload.headers, "From"));
+      messages.push({
+        id: msg.id,
+        fromMe: from.email === myEmail,
+        fromName: from.name || from.email,
+        subject: gmailHeader(msg.payload.headers, "Subject") || "(제목 없음)",
+        date: new Date(Number(msg.internalDate)),
+        body: extractMessageBody(msg.payload).trim().slice(0, 1000),
+      });
+    }
+    messages.sort((a, b) => a.date - b.date); // 채팅처럼 오래된 것부터
+    state.gmailConversation = messages;
+  } catch (e) {
+    state.gmailConversation = [];
+    state.gmailConversationError = e.message;
+  }
+
+  state.gmailConversationLoading = false;
+  render();
+}
+
+function mailExampleHtml() {
+  const exampleContacts = [
+    { name: "김민지", email: "skincare_min@gmail.com", count: 8, active: true },
+    { name: "박서준", email: "seojun.contents@gmail.com", count: 5, active: false },
+    { name: "이하늘", email: "haneul.beauty@naver.com", count: 3, active: false },
+  ];
+  const exampleConvo = [
+    { fromMe: false, fromName: "김민지", subject: "[협업 제안] 안녕하세요", body: "안녕하세요! 협업 제안 주셔서 감사합니다 :) 자세한 내용 여쭤봐도 될까요?", time: "7월 20일 오후 3:12" },
+    { fromMe: true, fromName: "나", subject: "RE: [협업 제안] 안녕하세요", body: "네 안녕하세요! 저희 브랜드 소개 자료 첨부드려요. 확인 부탁드립니다.", time: "7월 20일 오후 4:05" },
+    { fromMe: false, fromName: "김민지", subject: "RE: [협업 제안] 안녕하세요", body: "확인했습니다! 단가랑 일정 관련해서 통화 한번 가능할까요?", time: "7월 21일 오전 10:47" },
+  ];
+
+  const contactsHtml = exampleContacts.map(c => {
+    const ramp = avatarColor(c.name);
+    const [bg, fg] = RAMP_HEX[ramp];
+    return `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:8px;background:${c.active ? "#EEECFC" : "transparent"};">
+      <div style="width:32px;height:32px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;">${c.name.charAt(0)}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.name}</div>
+        <div style="font-size:11px;color:#A3A3AD;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c.email} · ${c.count}건</div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const convoHtml = exampleConvo.map(m => `
+    <div style="display:flex;flex-direction:column;align-items:${m.fromMe ? "flex-end" : "flex-start"};">
+      <div style="max-width:70%;padding:10px 14px;border-radius:14px;background:${m.fromMe ? "#5B4FE0" : "#FFFFFF"};color:${m.fromMe ? "#FFFFFF" : "#18181B"};border:${m.fromMe ? "none" : "1px solid #E6E6EA"};box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+        <div style="font-size:11px;font-weight:700;opacity:0.85;margin-bottom:4px;">${m.subject}</div>
+        <div style="font-size:13px;white-space:pre-wrap;word-break:break-word;line-height:1.5;">${m.body}</div>
+      </div>
+      <div style="font-size:10px;color:#A3A3AD;margin-top:4px;">${m.fromMe ? "나" : m.fromName} · ${m.time}</div>
+    </div>`).join("");
+
+  return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <h2 style="margin:0 0 6px;">메일함</h2>
+      <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">Gmail로 주고받은 메일을 상대별로 모아 확인하세요</p>
+
+      <div style="margin-top:16px;padding:14px 16px;background:#EEECFC;border:1px solid #D9D3FA;border-radius:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div style="font-size:13px;color:#3C3489;">📌 아래는 <strong>예시 화면</strong>이에요. Gmail을 연결하면 실제 메일 기록으로 바뀝니다.</div>
+        <button id="mail-example-connect" style="padding:9px 16px;border-radius:8px;border:none;background:#5B4FE0;color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">📧 Gmail 연결하기</button>
+      </div>
+
+      <div style="margin-top:16px;display:flex;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;height:480px;filter:saturate(0.85);">
+        <div style="width:280px;flex-shrink:0;border-right:1px solid #E6E6EA;display:flex;flex-direction:column;">
+          <div style="padding:16px 14px;border-bottom:1px solid #E6E6EA;">
+            <div style="font-size:14px;font-weight:700;">메일함</div>
+            <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">인플루언서 이메일 기준</div>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:8px;">${contactsHtml}</div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px;">${convoHtml}</div>
+      </div>
+    </div>`;
+}
+
+function mailTabHtml() {
+  if (!state.gmailToken) {
+    return mailExampleHtml();
+  }
+
+  const contacts = state.gmailContacts || [];
+  const influencerEmailCount = new Set(DATA.filter(d => d.email).map(d => d.email.toLowerCase())).size;
+  let contactListHtml;
+  if (state.gmailContactsLoading) {
+    contactListHtml = `<div style="padding:16px;color:#A3A3AD;font-size:12px;">인플루언서 ${influencerEmailCount}명 이메일로 메일 검색 중...</div>`;
+  } else if (state.gmailContactsError) {
+    contactListHtml = `
+      <div style="padding:16px;color:#D93B3B;font-size:12px;">불러오기 실패: ${escapeHtml(state.gmailContactsError)}</div>
+      <button id="mail-load-contacts" style="margin:0 16px;padding:8px 12px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;cursor:pointer;font-size:12px;">다시 시도</button>`;
+  } else if (!influencerEmailCount) {
+    contactListHtml = `<div style="padding:16px;color:#A3A3AD;font-size:12px;line-height:1.5;">아직 이메일이 확인된 인플루언서가 없어요.<br>먼저 "인플루언서 검색"에서 채널을 찾아보세요.</div>`;
+  } else if (!contacts.length) {
+    contactListHtml = `
+      <div style="padding:16px;color:#A3A3AD;font-size:12px;line-height:1.5;">인플루언서 ${influencerEmailCount}명 이메일로 찾아봤지만, 실제로 메일을 주고받은 사람은 없었어요.</div>
+      <button id="mail-load-contacts" style="margin:0 16px;padding:8px 12px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;cursor:pointer;font-size:12px;">다시 검색</button>`;
+  } else {
+    contactListHtml = contacts.map(c => {
+      const active = state.selectedContactEmail === c.email;
+      const ramp = avatarColor(c.name);
+      const [bg, fg] = RAMP_HEX[ramp];
+      return `
+      <div data-contact-email="${escapeHtml(c.email)}" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:${active ? "#EEECFC" : "transparent"};border-radius:8px;">
+        <div style="width:32px;height:32px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;">${escapeHtml(c.name.charAt(0))}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.name)}</div>
+          <div style="font-size:11px;color:#A3A3AD;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(c.email)} · ${c.count}건</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  let convoHtml;
+  if (!state.selectedContactEmail) {
+    convoHtml = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#A3A3AD;font-size:13px;">왼쪽에서 대화 상대를 선택하세요</div>`;
+  } else if (state.gmailConversationLoading) {
+    convoHtml = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#A3A3AD;font-size:13px;">불러오는 중...</div>`;
+  } else if (state.gmailConversationError) {
+    convoHtml = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#D93B3B;font-size:13px;">불러오기 실패: ${escapeHtml(state.gmailConversationError)}</div>`;
+  } else if (!state.gmailConversation || !state.gmailConversation.length) {
+    convoHtml = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#A3A3AD;font-size:13px;">주고받은 메일이 없어요.</div>`;
+  } else {
+    convoHtml = `
+    <div style="flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:14px;">
+      ${state.gmailConversation.map(m => `
+        <div style="display:flex;flex-direction:column;align-items:${m.fromMe ? "flex-end" : "flex-start"};">
+          <div style="max-width:70%;padding:10px 14px;border-radius:14px;background:${m.fromMe ? "#5B4FE0" : "#FFFFFF"};color:${m.fromMe ? "#FFFFFF" : "#18181B"};border:${m.fromMe ? "none" : "1px solid #E6E6EA"};box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+            <div style="font-size:11px;font-weight:700;opacity:0.85;margin-bottom:4px;">${escapeHtml(m.subject)}</div>
+            <div style="font-size:13px;white-space:pre-wrap;word-break:break-word;line-height:1.5;">${escapeHtml(m.body) || "(본문 없음)"}</div>
+          </div>
+          <div style="font-size:10px;color:#A3A3AD;margin-top:4px;">${m.fromMe ? "나" : escapeHtml(m.fromName)} · ${m.date.toLocaleString("ko-KR")}</div>
+        </div>
+      `).join("")}
+    </div>`;
+  }
+
+  return `
+    <div style="flex:1;display:flex;background:#F6F6F8;min-height:520px;">
+      <div style="width:280px;flex-shrink:0;border-right:1px solid #E6E6EA;background:#FFFFFF;display:flex;flex-direction:column;">
+        <div style="padding:16px 14px;border-bottom:1px solid #E6E6EA;display:flex;justify-content:space-between;align-items:center;">
+          <div>
+            <div style="font-size:14px;font-weight:700;">메일함</div>
+            <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">인플루언서 이메일 기준</div>
+          </div>
+          <button id="mail-refresh-contacts" title="새로고침" style="padding:6px 10px;border-radius:6px;border:1px solid #E6E6EA;background:#FFFFFF;font-size:12px;cursor:pointer;">↺</button>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:8px;">${contactListHtml}</div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;">${convoHtml}</div>
+    </div>`;
+}
+
 async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, targetCount, onStatus) {
   const results = [];
   let pageToken = undefined;
@@ -516,6 +832,13 @@ let state = {
   gmailTokenClient: null,
   gmailThreadsCache: {},
   gmailLoading: false,
+  gmailContacts: [],
+  gmailContactsLoading: false,
+  gmailContactsError: null,
+  selectedContactEmail: null,
+  gmailConversation: null,
+  gmailConversationLoading: false,
+  gmailConversationError: null,
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -563,6 +886,7 @@ const NAV_ITEMS = [
   { id: "search", label: "인플루언서 검색" },
   { id: "saved", label: "저장한 리스트" },
   { id: "history", label: "검색 히스토리" },
+  { id: "mail", label: "메일함" },
 ];
 
 function formatNumber(n) {
@@ -735,10 +1059,6 @@ const MIXSOON_CAMPAIGN_CHANNELS = [{"no": 1, "name": "최종시안", "link": "ht
 
 let SAVED_LISTS = [
   { name: "믹순 3차 — 기초화장품 채널", category: "기초화장품", count: MIXSOON_CAMPAIGN_CHANNELS.length, updated: "2026.07.29 수정", icon: "믹", bg: "#E6F1FB", fg: "#0C447C", campaignMembers: MIXSOON_CAMPAIGN_CHANNELS },
-  { name: "6월 뷰티 캠페인 후보", category: "뷰티", count: 12, updated: "2026.07.20 수정", icon: "뷰", bg: "#EEECFC", fg: "#3C3489" },
-  { name: "게임 스트리머 Pool", category: "게임", count: 8, updated: "2026.07.15 수정", icon: "게", bg: "#E1F5EE", fg: "#085041" },
-  { name: "여행 인플루언서 후보", category: "여행", count: 5, updated: "2026.07.10 수정", icon: "여", bg: "#FBEAF0", fg: "#72243E" },
-  { name: "패션 브랜드 협찬 후보", category: "패션", count: 20, updated: "2026.07.02 수정", icon: "패", bg: "#FAEEDA", fg: "#633806" },
 ];
 
 async function exportCampaignToExcel(list) {
@@ -1247,6 +1567,59 @@ async function exportToExcel(rows, title) {
   URL.revokeObjectURL(url);
 }
 
+function escapeHtml(str) {
+  return String(str || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function loadGmailThreads(email) {
+  state.gmailLoading = email;
+  renderDrawer();
+  try {
+    const messages = await fetchGmailThreadsFor(email);
+    state.gmailThreadsCache[email] = { messages };
+  } catch (e) {
+    state.gmailThreadsCache[email] = { messages: [], error: e.message };
+  }
+  state.gmailLoading = null;
+  renderDrawer();
+}
+
+// 상세 드로어 안에 표시되는 "이 크리에이터와의 메일 기록" 섹션
+function gmailSectionHtml(email) {
+  const connected = Boolean(state.gmailToken);
+  const cached = state.gmailThreadsCache[email];
+  const loading = state.gmailLoading === email;
+
+  let body;
+  if (loading) {
+    body = `<div style="font-size:12px;color:#A3A3AD;padding:10px 0;">불러오는 중...</div>`;
+  } else if (!connected) {
+    body = `<button data-gmail-load="${escapeHtml(email)}" style="width:100%;padding:10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:600;cursor:pointer;">📧 Gmail 연결하고 메일 기록 보기</button>`;
+  } else if (!cached) {
+    body = `<button data-gmail-load="${escapeHtml(email)}" style="width:100%;padding:10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:600;cursor:pointer;">메일 기록 불러오기</button>`;
+  } else if (cached.error) {
+    body = `<div style="font-size:12px;color:#D93B3B;">메일을 불러오지 못했어요: ${escapeHtml(cached.error)}</div>
+            <button data-gmail-load="${escapeHtml(email)}" style="margin-top:8px;padding:8px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;cursor:pointer;">다시 시도</button>`;
+  } else if (!cached.messages.length) {
+    body = `<div style="font-size:12px;color:#A3A3AD;">이 이메일과 주고받은 메일이 아직 없어요.</div>`;
+  } else {
+    body = cached.messages.map(m => `
+      <div style="padding:10px 12px;border:1px solid #E6E6EA;border-radius:8px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.subject)}</div>
+          <div style="font-size:11px;color:#A3A3AD;white-space:nowrap;">${m.date.toLocaleDateString("ko-KR")}</div>
+        </div>
+        <div style="font-size:11px;color:#6D6D76;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.snippet)}</div>
+      </div>`).join("");
+  }
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div style="font-size:12px;font-weight:600;color:#6D6D76;">이 크리에이터와의 메일 기록${connected ? "" : " (Gmail 연결 필요)"}</div>
+      ${body}
+    </div>`;
+}
+
 function renderDrawer() {
   const drawerRoot = document.getElementById("drawer");
   if (!state.selectedId) { drawerRoot.innerHTML = ""; return; }
@@ -1385,6 +1758,17 @@ function renderDrawer() {
     };
   }
 
+  document.querySelectorAll("[data-gmail-load]").forEach(btn => {
+    btn.onclick = () => {
+      const email = btn.dataset.gmailLoad;
+      if (!state.gmailToken) {
+        connectGoogle(() => loadGmailThreads(email));
+        return;
+      }
+      loadGmailThreads(email);
+    };
+  });
+
   document.getElementById("drawer-exclude").onclick = () => {
     if (confirm(`"${d.title}"을(를) 후보에서 제외할까요? 목록에서 삭제됩니다.`)) {
       const idx = DATA.findIndex(x => x.channel_id === d.channel_id);
@@ -1398,18 +1782,27 @@ function renderDrawer() {
   };
 }
 
+let lastRenderedTab = null; // 탭이 실제로 바뀐 순간에만 전환 애니메이션을 재생하기 위한 추적 변수
+
 function render() {
+  const tabJustChanged = lastRenderedTab !== state.activeTab;
+  lastRenderedTab = state.activeTab;
+  const tabAnimClass = tabJustChanged ? "tab-anim" : "";
+
   if (state.activeTab !== "search") {
     state.selectedId = null;
     document.getElementById("drawer").innerHTML = "";
     const label = NAV_ITEMS.find(n => n.id === state.activeTab).label;
     const bodyHtml = state.activeTab === "saved" ? savedListTabHtml()
       : state.activeTab === "history" ? historyTabHtml()
+      : state.activeTab === "mail" ? mailTabHtml()
       : placeholderTabHtml(label);
     document.getElementById("app").innerHTML = `
       <div style="display:flex;min-height:520px;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;">
         ${sidebarHtml()}
-        ${bodyHtml}
+        <div class="${tabAnimClass}" style="flex:1;min-width:0;display:flex;">
+          ${bodyHtml}
+        </div>
       </div>`;
     document.querySelectorAll("[data-nav]").forEach(el => {
       el.onclick = () => {
@@ -1420,6 +1813,22 @@ function render() {
       };
     });
     bindGmailSidebarButtons();
+
+    if (state.activeTab === "mail") {
+      const exampleConnectBtn = document.getElementById("mail-example-connect");
+      if (exampleConnectBtn) exampleConnectBtn.onclick = () => connectGoogle(() => loadGmailContacts());
+      const loadBtn = document.getElementById("mail-load-contacts");
+      if (loadBtn) loadBtn.onclick = () => loadGmailContacts();
+      const refreshBtn = document.getElementById("mail-refresh-contacts");
+      if (refreshBtn) refreshBtn.onclick = () => loadGmailContacts();
+      document.querySelectorAll("[data-contact-email]").forEach(el => {
+        el.onclick = () => loadGmailConversation(el.dataset.contactEmail);
+      });
+      // 메일함 탭에 처음 들어왔고 아직 연락처를 한 번도 안 불러왔으면 자동으로 불러오기
+      if (state.gmailToken && !state.gmailContacts.length && !state.gmailContactsLoading && !state.gmailContactsError) {
+        loadGmailContacts();
+      }
+    }
     document.querySelectorAll("[data-history-idx]").forEach(btn => {
       btn.onclick = () => {
         const h = HISTORY_ITEMS[Number(btn.dataset.historyIdx)];
@@ -1520,7 +1929,7 @@ function render() {
   document.getElementById("app").innerHTML = `
   <div style="display:flex;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;">
     ${sidebarHtml()}
-    <div style="flex:1;min-width:0;padding:28px 32px;background:#F6F6F8;">
+    <div class="${tabAnimClass}" style="flex:1;min-width:0;padding:28px 32px;background:#F6F6F8;">
 
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:1.25rem;flex-wrap:wrap;">
       <div>
@@ -1770,6 +2179,15 @@ if (loadFromLocalStorage()) {
 }
 
 render();
+
+// 로딩 스플래시 화면: 최소 2~2.5초 정도 보여준 뒤 부드럽게 사라짐
+setTimeout(() => {
+  const loadingScreen = document.getElementById("loading-screen");
+  if (loadingScreen) {
+    loadingScreen.classList.add("fade-out");
+    setTimeout(() => loadingScreen.remove(), 400); // 페이드아웃 트랜지션(0.4s) 끝난 뒤 DOM에서 제거
+  }
+}, 2200);
 </script>
 
 </body>
