@@ -1029,6 +1029,7 @@ let state = {
   teamSyncUser: null,
   teamOnlineUsers: [],
   sidebarDropdownOpen: null, // null | "gmail" | "team"
+  sidebarDropdownRect: null,
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -1231,12 +1232,19 @@ function bindGmailSidebarButtons() {
     btn.onclick = (e) => {
       e.stopPropagation();
       const key = btn.dataset.iconToggle;
-      state.sidebarDropdownOpen = state.sidebarDropdownOpen === key ? null : key;
+      if (state.sidebarDropdownOpen === key) {
+        state.sidebarDropdownOpen = null;
+        state.sidebarDropdownRect = null;
+      } else {
+        const r = btn.getBoundingClientRect();
+        state.sidebarDropdownRect = { top: r.top, left: r.left, right: r.right, bottom: r.bottom, width: r.width };
+        state.sidebarDropdownOpen = key;
+      }
       render();
     };
   });
   document.querySelectorAll("[data-dropdown-outside]").forEach(el => {
-    el.onclick = () => { state.sidebarDropdownOpen = null; render(); };
+    el.onclick = () => { state.sidebarDropdownOpen = null; state.sidebarDropdownRect = null; render(); };
   });
 }
 
@@ -1256,7 +1264,7 @@ function sidebarHtml() {
       </button>
       ${gmailOpen ? `
       <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
-      <div style="position:absolute;bottom:calc(100% + 6px);left:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+      <div style="position:fixed;bottom:${state.sidebarDropdownRect ? `calc(100vh - ${state.sidebarDropdownRect.top}px + 6px)` : "auto"};left:${state.sidebarDropdownRect ? state.sidebarDropdownRect.left + "px" : "20px"};width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
         <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">Gmail</div>
         ${state.gmailToken ? `
           <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.gmailAccountEmail || "연결됨")}</div>
@@ -1277,7 +1285,7 @@ function sidebarHtml() {
       </button>
       ${teamOpen ? `
       <div data-dropdown-outside style="position:fixed;inset:0;z-index:40;"></div>
-      <div style="position:absolute;bottom:calc(100% + 6px);right:0;width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
+      <div style="position:fixed;bottom:${state.sidebarDropdownRect ? `calc(100vh - ${state.sidebarDropdownRect.top}px + 6px)` : "auto"};left:${state.sidebarDropdownRect ? (state.sidebarDropdownRect.right - 220) + "px" : "20px"};width:220px;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:10px;box-shadow:0 8px 20px rgba(0,0,0,0.12);padding:12px;z-index:50;">
         <div style="font-size:11px;color:#A3A3AD;margin-bottom:2px;">팀 동기화</div>
         ${state.teamSyncUser ? `
           <div style="font-size:12px;color:#18181B;font-weight:500;margin-bottom:10px;word-break:break-all;">${escapeHtml(state.teamSyncUser.email)}</div>
