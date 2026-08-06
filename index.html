@@ -118,6 +118,10 @@ try {
 }
 
 // 팀 동기화 로그인 (Gmail 연결과는 별개 — id_token 기반이라 접근 방식이 다름)
+// 팀 동기화(Firebase) 로그인은 Gmail용(GOOGLE_CLIENT_ID)과 다른 프로젝트에 속해 있어서
+// Firebase 콘솔의 Authentication > Sign-in method > Google > "웹 클라이언트 ID" 값을 따로 씀
+const FIREBASE_GOOGLE_CLIENT_ID = "280452292394-i9kfg94t8foprsi4sb0eud2e2je5eeuh.apps.googleusercontent.com";
+
 function connectTeamSync() {
   if (!firebaseEnabled) {
     alert("아직 팀 동기화가 설정되지 않았어요. 코드 상단의 FIREBASE_CONFIG를 채워주세요.");
@@ -128,7 +132,7 @@ function connectTeamSync() {
     return;
   }
   google.accounts.id.initialize({
-    client_id: GOOGLE_CLIENT_ID,
+    client_id: FIREBASE_GOOGLE_CLIENT_ID,
     callback: async (response) => {
       try {
         const credential = firebase.auth.GoogleAuthProvider.credential(response.credential);
