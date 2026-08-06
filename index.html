@@ -146,6 +146,7 @@ function connectTeamSync() {
 }
 
 function disconnectTeamSync() {
+  stopPresenceTracking();
   if (fbAuth) fbAuth.signOut();
   state.teamSyncUser = null;
   render();
@@ -195,10 +196,33 @@ function pushToFirebase() {
   }).catch(e => console.warn("Firebase 저장 실패:", e.message));
 }
 
+function startPresenceTracking(user) {
+  if (!fbDatabase) return;
+  const presenceRef = fbDatabase.ref(`presence/${user.uid}`);
+  presenceRef.set({ email: user.email, name: user.displayName || user.email, connectedAt: Date.now() });
+  presenceRef.onDisconnect().remove(); // 브라우저 닫히거나 네트워크 끊기면 자동으로 목록에서 빠짐
+
+  fbDatabase.ref("presence").on("value", (snapshot) => {
+    const val = snapshot.val() || {};
+    state.teamOnlineUsers = Object.values(val).sort((a, b) => a.connectedAt - b.connectedAt);
+    render();
+  });
+}
+
+function stopPresenceTracking() {
+  if (!fbDatabase || !fbAuth?.currentUser) return;
+  fbDatabase.ref(`presence/${fbAuth.currentUser.uid}`).remove();
+  fbDatabase.ref("presence").off();
+  state.teamOnlineUsers = [];
+}
+
 if (firebaseEnabled) {
   fbAuth.onAuthStateChanged(user => {
     state.teamSyncUser = user ? { email: user.email, name: user.displayName } : null;
-    if (user) startFirebaseSync();
+    if (user) {
+      startFirebaseSync();
+      startPresenceTracking(user);
+    }
     render();
   });
 }
@@ -962,6 +986,7 @@ async function performQuery() {
       minEngagement: state.minEngagement,
       resultCount: totalNewResults,
       when: `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, "0")}.${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
+      searchedBy: state.teamSyncUser ? (state.teamSyncUser.name || state.teamSyncUser.email) : null,
     });
     saveToLocalStorage();
   } catch (err) {
@@ -1002,6 +1027,7 @@ let state = {
   gmailConversationLoading: false,
   gmailConversationError: null,
   teamSyncUser: null,
+  teamOnlineUsers: [],
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -1213,11 +1239,18 @@ function sidebarHtml() {
          <button data-gmail-disconnect style="padding:6px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#6D6D76;font-size:11px;cursor:pointer;">연결 해제</button>
        </div>`
     : `<button data-gmail-connect style="width:100%;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">📧 Gmail 연결</button>`;
+  const onlineUsersHtml = (state.teamOnlineUsers || []).length
+    ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid #F2F2F4;">
+         <div style="font-size:10px;color:#A3A3AD;margin-bottom:4px;">🟢 현재 접속 중 (${state.teamOnlineUsers.length}명)</div>
+         ${state.teamOnlineUsers.map(u => `<div style="font-size:11px;color:#18181B;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:2px 0;">${escapeHtml(u.name || u.email)}</div>`).join("")}
+       </div>`
+    : "";
   const teamSyncStatus = state.teamSyncUser
     ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:12px;">
          <div style="font-size:11px;color:#A3A3AD;">👥 팀 동기화 연결됨</div>
          <div style="font-size:12px;color:#18181B;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${state.teamSyncUser.email}</div>
          <button data-team-sync-disconnect style="padding:6px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#6D6D76;font-size:11px;cursor:pointer;">연결 해제</button>
+         ${onlineUsersHtml}
        </div>`
     : `<button data-team-sync-connect style="width:100%;margin-top:12px;padding:9px 10px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;font-weight:500;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;">👥 팀 동기화 연결</button>`;
   return `
@@ -1303,7 +1336,7 @@ function savedListTabHtml() {
         <div style="width:48px;height:48px;border-radius:12px;background:${l.bg};color:${l.fg};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;flex-shrink:0;">${l.icon}</div>
         <div style="flex:1;min-width:0;">
           <div style="font-size:16px;font-weight:600;">${l.name}</div>
-          <div style="font-size:12px;color:#6D6D76;margin-top:4px;">인플루언서 ${l.count}명 · ${l.updated}</div>
+          <div style="font-size:12px;color:#6D6D76;margin-top:4px;">인플루언서 ${l.count}명 · ${l.updated}${(l.lastAddedBy || l.savedBy) ? ` · <span style="color:#5B4FE0;">${escapeHtml(l.lastAddedBy || l.savedBy)}</span> 저장` : ""}</div>
         </div>
         <div style="display:flex;align-items:center;flex-shrink:0;">${avatarStack}${moreBadge}</div>
         <div style="display:flex;gap:8px;flex-shrink:0;position:relative;">
@@ -1457,7 +1490,7 @@ function historyTabHtml() {
             <span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#EEECFC;color:#5B4FE0;">${platformLabel}</span>
           </div>
           <div style="font-size:12px;color:#6D6D76;margin-top:6px;">
-            팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 최소 댓글 반응도 ${h.minEngagement.toFixed(1)}% · 결과 ${h.resultCount}건 · ${h.when}
+            팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 최소 댓글 반응도 ${h.minEngagement.toFixed(1)}% · 결과 ${h.resultCount}건 · ${h.when}${h.searchedBy ? ` · <span style="color:#5B4FE0;">${escapeHtml(h.searchedBy)}</span> 검색` : ""}
           </div>
         </div>
         <button data-history-idx="${i}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">↺ 다시 검색</button>
@@ -1548,6 +1581,7 @@ function renderSaveListModal() {
 
   const confirm = () => {
     const rows = saveListModal.rows;
+    const actorLabel = state.teamSyncUser ? (state.teamSyncUser.name || state.teamSyncUser.email) : null;
 
     if (mode === "existing" && existingLists.length) {
       const select = document.getElementById("save-list-modal-select");
@@ -1558,6 +1592,7 @@ function renderSaveListModal() {
       list.memberIds = [...idSet];
       list.count = list.memberIds.length;
       list.updated = todayLabel();
+      list.lastAddedBy = actorLabel;
       saveToLocalStorage();
       closeSaveListModal();
       state.activeTab = "saved";
@@ -1582,6 +1617,8 @@ function renderSaveListModal() {
       icon: name.trim().charAt(0),
       bg, fg,
       memberIds: rows.map(d => d.channel_id),
+      savedBy: actorLabel,
+      lastAddedBy: actorLabel,
     });
 
     saveToLocalStorage();
