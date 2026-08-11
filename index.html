@@ -940,6 +940,7 @@ function mergeIntoData(newResults) {
 // "조회하기" 버튼 클릭 시 실행 — 선택한 카테고리를 검색어 삼아 유튜브에 실시간으로 검색하고,
 // 결과를 DATA에 합친 뒤 팔로워/댓글 반응도 등 나머지 조건으로 필터링합니다.
 async function performQuery() {
+  state.hasSearchedThisSession = true;
   applyFilters();
 
   const hasKey = YOUTUBE_API_KEY && YOUTUBE_API_KEY !== "YOUR_YOUTUBE_API_KEY";
@@ -1030,6 +1031,7 @@ let state = {
   teamOnlineUsers: [],
   sidebarDropdownOpen: null, // null | "gmail" | "team"
   sidebarDropdownRect: null,
+  hasSearchedThisSession: false,
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -2280,6 +2282,7 @@ function render() {
       </div>
     </div>
 
+${state.hasSearchedThisSession ? `
     ${applied.percentFallback ? `
     <div style="padding:10px 14px;background:#FFF8E6;border:1px solid #F5DFA3;border-radius:10px;font-size:12px;color:#7A5B00;margin-bottom:1rem;">
       ⚠️ 설정하신 비중 조건(${Object.entries(applied.categoryPercents).filter(([c, p]) => applied.categories.has(c) && p > 0).map(([c, p]) => `${c} ${p}%+`).join(", ")})을 동시에 만족하는 채널은 없었어요. 대신 선택한 카테고리(${[...applied.categories].join(", ")})에 해당하는 채널을 모두 보여드립니다.
@@ -2339,6 +2342,13 @@ function render() {
       </table>
     </div>
     <p style="font-size:12px;color:#A3A3AD;margin-top:8px;">이메일은 채널/프로필 설명에 공개된 경우만 표시됩니다. "유튜브+인스타" 배지는 설명란의 상호 링크로 매칭한 결과입니다.</p>
+    ` : `
+    <div style="padding:80px 24px;text-align:center;background:#FFFFFF;border:1px solid #E6E6EA;border-radius:12px;">
+      <div style="font-size:32px;margin-bottom:12px;">🔍</div>
+      <div style="font-size:15px;color:#18181B;font-weight:600;">조회하세요~</div>
+      <div style="font-size:13px;color:#A3A3AD;margin-top:6px;">카테고리와 조건을 선택하고 위의 "조회하기" 버튼을 눌러보세요.</div>
+    </div>
+    `}
 
     </div>
   </div>
@@ -2419,8 +2429,10 @@ function render() {
     state.limit = v === "" ? null : Math.max(1, Number(v));
   };
 
-  document.getElementById("f-healthy-toggle").onclick = () => { state.healthyOnly = !state.healthyOnly; render(); };
-  document.getElementById("f-email-toggle").onclick = () => { state.emailOnly = !state.emailOnly; render(); };
+  const healthyToggle = document.getElementById("f-healthy-toggle");
+  if (healthyToggle) healthyToggle.onclick = () => { state.healthyOnly = !state.healthyOnly; render(); };
+  const emailToggle = document.getElementById("f-email-toggle");
+  if (emailToggle) emailToggle.onclick = () => { state.emailOnly = !state.emailOnly; render(); };
 
   document.getElementById("f-apply").onclick = performQuery;
 
