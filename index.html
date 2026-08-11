@@ -147,8 +147,10 @@ function connectTeamSync() {
 
 function disconnectTeamSync() {
   stopPresenceTracking();
+  if (fbDatabase) fbDatabase.ref("teamMembers").off();
   if (fbAuth) fbAuth.signOut();
   state.teamSyncUser = null;
+  state.teamMembersList = [];
   render();
 }
 
@@ -199,7 +201,7 @@ function pushToFirebase() {
 function startPresenceTracking(user) {
   if (!fbDatabase) return;
   const presenceRef = fbDatabase.ref(`presence/${user.uid}`);
-  presenceRef.set({ email: user.email, name: user.displayName || user.email, connectedAt: Date.now() });
+  presenceRef.set({ uid: user.uid, email: user.email, name: user.displayName || user.email, connectedAt: Date.now() });
   presenceRef.onDisconnect().remove(); // 브라우저 닫히거나 네트워크 끊기면 자동으로 목록에서 빠짐
 
   fbDatabase.ref("presence").on("value", (snapshot) => {
@@ -216,12 +218,40 @@ function stopPresenceTracking() {
   state.teamOnlineUsers = [];
 }
 
+// presence(접속 여부)와 달리, 한 번이라도 연결한 적 있는 팀원은 영구적으로 기록해서
+// "팀 활동" 탭에서 오프라인이어도 목록에 계속 보이게 함
+function registerTeamMember(user) {
+  if (!fbDatabase) return;
+  const ref = fbDatabase.ref(`teamMembers/${user.uid}`);
+  ref.once("value").then(snap => {
+    const existing = snap.val();
+    ref.set({
+      uid: user.uid,
+      email: user.email,
+      name: user.displayName || user.email,
+      firstConnectedAt: existing?.firstConnectedAt || Date.now(),
+      lastConnectedAt: Date.now(),
+    });
+  }).catch(e => console.warn("팀원 등록 실패:", e.message));
+}
+
+function startTeamMembersTracking() {
+  if (!fbDatabase) return;
+  fbDatabase.ref("teamMembers").on("value", (snapshot) => {
+    const val = snapshot.val() || {};
+    state.teamMembersList = Object.values(val).sort((a, b) => b.lastConnectedAt - a.lastConnectedAt);
+    render();
+  });
+}
+
 if (firebaseEnabled) {
   fbAuth.onAuthStateChanged(user => {
     state.teamSyncUser = user ? { email: user.email, name: user.displayName } : null;
     if (user) {
       startFirebaseSync();
       startPresenceTracking(user);
+      registerTeamMember(user);
+      startTeamMembersTracking();
     }
     render();
   });
@@ -790,6 +820,119 @@ function mailTabHtml() {
     </div>`;
 }
 
+function relativeTimeLabel(ts) {
+  if (!ts) return "";
+  const diffMs = Date.now() - ts;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "방금 전";
+  if (mins < 60) return `${mins}분 전`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  return `${days}일 전`;
+}
+
+function teamActivityTabHtml() {
+  if (!firebaseEnabled || !state.teamSyncUser) {
+    return `
+    <div style="flex:1;padding:28px 32px;background:#F6F6F8;">
+      <h2 style="margin:0 0 6px;">팀 활동</h2>
+      <p style="color:#6D6D76;font-size:13px;margin:4px 0 0;">팀원별로 무엇을 검색하고 저장했는지 한눈에 확인하세요</p>
+      <div style="margin-top:24px;padding:48px;text-align:center;border:1px dashed #E6E6EA;border-radius:12px;color:#A3A3AD;font-size:13px;background:#FFFFFF;">
+        팀 동기화를 먼저 연결해주세요 (왼쪽 사이드바 "팀 동기화" 버튼)
+      </div>
+    </div>`;
+  }
+
+  const onlineUidSet = new Set((state.teamOnlineUsers || []).map(u => u.uid));
+  const members = state.teamMembersList || [];
+
+  const memberListHtml = members.length
+    ? members.map(m => {
+        const active = state.selectedTeamMemberUid === m.uid;
+        const ramp = avatarColor(m.name || m.email);
+        const [bg, fg] = RAMP_HEX[ramp];
+        const isOnline = onlineUidSet.has(m.uid);
+        return `
+        <div data-team-member="${escapeHtml(m.uid)}" style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;background:${active ? "#EEECFC" : "transparent"};border-radius:8px;">
+          <div style="position:relative;flex-shrink:0;">
+            <div style="width:32px;height:32px;border-radius:50%;background:${bg};color:${fg};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;">${escapeHtml((m.name || m.email).charAt(0))}</div>
+            ${isOnline ? `<span style="position:absolute;bottom:-1px;right:-1px;width:9px;height:9px;border-radius:50%;background:#22C55E;border:2px solid #FFFFFF;"></span>` : ""}
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name || m.email)}</div>
+            <div style="font-size:11px;color:#A3A3AD;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${isOnline ? "🟢 접속 중" : `마지막 활동 ${relativeTimeLabel(m.lastConnectedAt)}`}</div>
+          </div>
+        </div>`;
+      }).join("")
+    : `<div style="padding:16px;color:#A3A3AD;font-size:12px;">아직 팀 동기화에 연결한 사람이 없어요.</div>`;
+
+  let detailHtml;
+  const selected = members.find(m => m.uid === state.selectedTeamMemberUid);
+  if (!selected) {
+    detailHtml = `<div style="flex:1;display:flex;align-items:center;justify-content:center;color:#A3A3AD;font-size:13px;">왼쪽에서 팀원을 선택하세요</div>`;
+  } else {
+    const theirLists = SAVED_LISTS.filter(l => {
+      const actor = l.lastAddedBy || l.savedBy;
+      return actor && actor.email === selected.email;
+    });
+    const theirHistory = HISTORY_ITEMS.filter(h => h.searchedBy && h.searchedBy.email === selected.email);
+
+    const listsHtml = theirLists.length
+      ? theirLists.map(l => {
+          const idx = SAVED_LISTS.indexOf(l);
+          const count = l.campaignMembers ? l.campaignMembers.length : l.count;
+          return `
+          <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #E6E6EA;border-radius:10px;margin-bottom:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(l.name)}</div>
+              <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">인플루언서 ${count}명 · ${l.updated}</div>
+            </div>
+            <button data-team-export-list="${idx}" style="padding:7px 12px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;cursor:pointer;white-space:nowrap;">⬇ 내보내기</button>
+          </div>`;
+        }).join("")
+      : `<div style="font-size:12px;color:#A3A3AD;padding:8px 0;">저장한 리스트가 없어요.</div>`;
+
+    const historyHtml = theirHistory.length
+      ? theirHistory.map(h => {
+          const idx = HISTORY_ITEMS.indexOf(h);
+          return `
+          <div style="display:flex;align-items:center;gap:12px;padding:12px 14px;border:1px solid #E6E6EA;border-radius:10px;margin-bottom:8px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;">${escapeHtml(h.categories.join(", "))}</div>
+              <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 결과 ${h.resultCount}건 · ${h.when}</div>
+            </div>
+            <button data-team-redo-search="${idx}" style="padding:7px 12px;border-radius:8px;border:1px solid #E6E6EA;background:#FFFFFF;color:#18181B;font-size:12px;cursor:pointer;white-space:nowrap;">↺ 다시 검색</button>
+          </div>`;
+        }).join("")
+      : `<div style="font-size:12px;color:#A3A3AD;padding:8px 0;">검색 기록이 없어요.</div>`;
+
+    detailHtml = `
+      <div style="flex:1;overflow-y:auto;padding:24px 28px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+          <div style="font-size:17px;font-weight:700;">${escapeHtml(selected.name || selected.email)}</div>
+          <span style="font-size:12px;color:#A3A3AD;">${escapeHtml(selected.email)}</span>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:#6D6D76;margin-bottom:10px;">☆ 저장한 리스트 (${theirLists.length})</div>
+        ${listsHtml}
+        <div style="font-size:13px;font-weight:600;color:#6D6D76;margin:22px 0 10px;">🔍 검색 히스토리 (${theirHistory.length})</div>
+        ${historyHtml}
+      </div>`;
+  }
+
+  return `
+    <div style="flex:1;display:flex;background:#F6F6F8;min-height:520px;">
+      <div style="width:280px;flex-shrink:0;border-right:1px solid #E6E6EA;background:#FFFFFF;display:flex;flex-direction:column;">
+        <div style="padding:16px 14px;border-bottom:1px solid #E6E6EA;">
+          <div style="font-size:14px;font-weight:700;">팀 활동</div>
+          <div style="font-size:11px;color:#A3A3AD;margin-top:2px;">팀원 ${members.length}명</div>
+        </div>
+        <div style="flex:1;overflow-y:auto;padding:8px;">${memberListHtml}</div>
+      </div>
+      ${detailHtml}
+    </div>`;
+}
+
 async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, targetCount, onStatus) {
   const results = [];
   let pageToken = undefined;
@@ -987,7 +1130,7 @@ async function performQuery() {
       minEngagement: state.minEngagement,
       resultCount: totalNewResults,
       when: `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, "0")}.${String(now.getDate()).padStart(2, "0")} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`,
-      searchedBy: state.teamSyncUser ? (state.teamSyncUser.name || state.teamSyncUser.email) : null,
+      searchedBy: state.teamSyncUser ? { email: state.teamSyncUser.email, name: state.teamSyncUser.name || state.teamSyncUser.email } : null,
     });
     saveToLocalStorage();
   } catch (err) {
@@ -1032,6 +1175,8 @@ let state = {
   sidebarDropdownOpen: null, // null | "gmail" | "team"
   sidebarDropdownRect: null,
   hasSearchedThisSession: false,
+  teamMembersList: [],
+  selectedTeamMemberUid: null,
   querying: false,
   queryStatus: "",
   activeTab: "search",
@@ -1080,6 +1225,7 @@ const NAV_ITEMS = [
   { id: "saved", label: "저장한 리스트" },
   { id: "history", label: "검색 히스토리" },
   { id: "mail", label: "메일함" },
+  { id: "team", label: "팀 활동" },
 ];
 
 function formatNumber(n) {
@@ -1402,7 +1548,7 @@ function savedListTabHtml() {
         <div style="width:48px;height:48px;border-radius:12px;background:${l.bg};color:${l.fg};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;flex-shrink:0;">${l.icon}</div>
         <div style="flex:1;min-width:0;">
           <div style="font-size:16px;font-weight:600;">${l.name}</div>
-          <div style="font-size:12px;color:#6D6D76;margin-top:4px;">인플루언서 ${l.count}명 · ${l.updated}${(l.lastAddedBy || l.savedBy) ? ` · <span style="color:#5B4FE0;">${escapeHtml(l.lastAddedBy || l.savedBy)}</span> 저장` : ""}</div>
+          <div style="font-size:12px;color:#6D6D76;margin-top:4px;">인플루언서 ${l.count}명 · ${l.updated}${(l.lastAddedBy || l.savedBy) ? ` · <span style="color:#5B4FE0;">${escapeHtml((l.lastAddedBy || l.savedBy).name)}</span> 저장` : ""}</div>
         </div>
         <div style="display:flex;align-items:center;flex-shrink:0;">${avatarStack}${moreBadge}</div>
         <div style="display:flex;gap:8px;flex-shrink:0;position:relative;">
@@ -1556,7 +1702,7 @@ function historyTabHtml() {
             <span style="padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;background:#EEECFC;color:#5B4FE0;">${platformLabel}</span>
           </div>
           <div style="font-size:12px;color:#6D6D76;margin-top:6px;">
-            팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 최소 댓글 반응도 ${h.minEngagement.toFixed(1)}% · 결과 ${h.resultCount}건 · ${h.when}${h.searchedBy ? ` · <span style="color:#5B4FE0;">${escapeHtml(h.searchedBy)}</span> 검색` : ""}
+            팔로워/구독자 ${formatNumber(h.minSubs)}~${formatNumber(h.maxSubs)} · 최소 댓글 반응도 ${h.minEngagement.toFixed(1)}% · 결과 ${h.resultCount}건 · ${h.when}${h.searchedBy ? ` · <span style="color:#5B4FE0;">${escapeHtml(h.searchedBy.name)}</span> 검색` : ""}
           </div>
         </div>
         <button data-history-idx="${i}" style="padding:9px 16px;border-radius:8px;border:1px solid #D9D9E0;background:#FFFFFF;color:#18181B;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;">↺ 다시 검색</button>
@@ -1647,7 +1793,7 @@ function renderSaveListModal() {
 
   const confirm = () => {
     const rows = saveListModal.rows;
-    const actorLabel = state.teamSyncUser ? (state.teamSyncUser.name || state.teamSyncUser.email) : null;
+    const actorLabel = state.teamSyncUser ? { email: state.teamSyncUser.email, name: state.teamSyncUser.name || state.teamSyncUser.email } : null;
 
     if (mode === "existing" && existingLists.length) {
       const select = document.getElementById("save-list-modal-select");
@@ -2073,6 +2219,7 @@ function render() {
     const bodyHtml = state.activeTab === "saved" ? savedListTabHtml()
       : state.activeTab === "history" ? historyTabHtml()
       : state.activeTab === "mail" ? mailTabHtml()
+      : state.activeTab === "team" ? teamActivityTabHtml()
       : placeholderTabHtml(label);
     document.getElementById("app").innerHTML = `
       <div style="display:flex;min-height:520px;border:1px solid #E6E6EA;border-radius:14px;overflow:hidden;">
@@ -2105,6 +2252,32 @@ function render() {
       if (state.gmailToken && !state.gmailContacts.length && !state.gmailContactsLoading && !state.gmailContactsError) {
         loadGmailContacts();
       }
+    }
+    if (state.activeTab === "team") {
+      document.querySelectorAll("[data-team-member]").forEach(el => {
+        el.onclick = () => { state.selectedTeamMemberUid = el.dataset.teamMember; render(); };
+      });
+      document.querySelectorAll("[data-team-export-list]").forEach(btn => {
+        btn.onclick = () => {
+          const l = SAVED_LISTS[Number(btn.dataset.teamExportList)];
+          if (l.campaignMembers) { exportCampaignToExcel(l); return; }
+          const members = getListMembers(l);
+          openExportModal(members.length ? members : DATA.slice(0, l.count), l.name);
+        };
+      });
+      document.querySelectorAll("[data-team-redo-search]").forEach(btn => {
+        btn.onclick = () => {
+          const h = HISTORY_ITEMS[Number(btn.dataset.teamRedoSearch)];
+          state.categories = new Set(h.categories);
+          state.platforms = new Set(h.platforms);
+          state.minSubs = h.minSubs;
+          state.maxSubs = h.maxSubs;
+          state.minEngagement = h.minEngagement;
+          state.activeTab = "search";
+          applyFilters();
+          render();
+        };
+      });
     }
     document.querySelectorAll("[data-history-idx]").forEach(btn => {
       btn.onclick = () => {
