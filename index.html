@@ -259,28 +259,36 @@ if (firebaseEnabled) {
 
 // 채널명+설명(bio)에서 주력 콘텐츠 유형을 키워드 기반으로 추론 (실제 영상 콘텐츠 분석이 아닌 근사치)
 const CONTENT_TYPE_KEYWORDS = {
-  "뷰티": ["뷰티", "화장품", "코스메틱", "뷰티템", "beauty"],
+  "뷰티": ["뷰티", "화장품", "코스메틱", "뷰티템", "beauty", "cosmetic"],
   "메이크업": ["메이크업", "화장법", "파운데이션", "아이섀도", "makeup"],
-  "스킨케어": ["스킨케어", "피부관리", "클렌징", "세럼", "스킨"],
-  "패션": ["패션", "스타일링", "코디", "ootd", "옷"],
-  "데일리룩": ["데일리룩", "룩북", "데일리"],
-  "브이로그": ["브이로그", "vlog", "일상"],
-  "건강": ["건강", "웰빙", "웰에이징", "다이어트"],
-  "리빙": ["리빙", "살림", "인테리어", "정리"],
-  "푸드": ["푸드", "먹방", "맛집"],
-  "게임": ["게임", "겜", "플레이", "gaming"],
-  "e스포츠": ["e스포츠", "esports", "롤", "발로란트"],
-  "요리": ["요리", "레시피", "쿠킹", "cooking"],
-  "베이킹": ["베이킹", "제빵", "빵"],
-  "여행": ["여행", "트래블", "travel"],
-  "캠핑": ["캠핑", "차박", "camping"],
-  "육아": ["육아", "아기", "육아템", "맘"],
-  "반려동물": ["반려동물", "강아지", "고양이", "펫"],
-  "운동·헬스": ["운동", "헬스", "홈트", "필라테스", "요가"],
+  "스킨케어": ["스킨케어", "피부관리", "클렌징", "세럼", "스킨", "skincare", "skin_care"],
+  "패션": ["패션", "스타일링", "코디", "ootd", "옷", "fashion", "style"],
+  "데일리룩": ["데일리룩", "룩북", "데일리", "lookbook"],
+  "브이로그": ["브이로그", "vlog", "일상", "daily_life"],
+  "건강": ["건강", "웰빙", "웰에이징", "다이어트", "health", "wellness", "diet"],
+  "리빙": ["리빙", "살림", "인테리어", "정리", "interior", "home"],
+  "푸드": ["푸드", "먹방", "맛집", "food", "mukbang", "restaurant"],
+  "게임": ["게임", "겜", "플레이", "gaming", "video_game", "gameplay"],
+  "e스포츠": ["e스포츠", "esports", "롤", "발로란트", "league_of_legends"],
+  "요리": ["요리", "레시피", "쿠킹", "cooking", "recipe"],
+  "베이킹": ["베이킹", "제빵", "빵", "baking", "bread"],
+  "여행": ["여행", "트래블", "travel", "tourism"],
+  "캠핑": ["캠핑", "차박", "camping", "outdoor"],
+  "육아": ["육아", "아기", "육아템", "맘", "parenting", "baby", "child"],
+  "반려동물": ["반려동물", "강아지", "고양이", "펫", "pet", "dog", "cat", "animal"],
+  "운동·헬스": ["운동", "헬스", "홈트", "필라테스", "요가", "fitness", "workout", "yoga", "exercise"],
 };
 
-function inferContentType(title, description) {
-  const text = `${title || ""} ${description || ""}`.toLowerCase();
+// 유튜브가 자체적으로 매기는 공식 카테고리(categoryId) -> 우리 키워드 사전과 매칭시킬 영어 힌트
+// (우리가 추측하는 게 아니라 유튜브가 이미 분류해준 값이라 신뢰도 있는 보조 신호로 사용)
+const YT_CATEGORY_HINTS = {
+  "15": "pet animal", "17": "sport fitness exercise", "19": "travel tourism",
+  "20": "gaming video_game", "21": "vlog daily_life", "22": "vlog daily_life",
+  "24": "entertainment", "26": "style fashion beauty howto", "28": "technology",
+};
+
+function inferContentType(title, description, extraText) {
+  const text = `${title || ""} ${description || ""} ${extraText || ""}`.toLowerCase();
   const scores = [];
   for (const [tag, keywords] of Object.entries(CONTENT_TYPE_KEYWORDS)) {
     const score = keywords.reduce((sum, kw) => sum + (text.includes(kw.toLowerCase()) ? 1 : 0), 0);
@@ -976,7 +984,7 @@ async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, t
       let videos = [];
       try {
         const plData = await ytFetch("playlistItems", {
-          playlistId: uploadsPlaylist, part: "contentDetails", maxResults: 8,
+          playlistId: uploadsPlaylist, part: "contentDetails", maxResults: 15,
         });
         videos = (plData.items || []).map(v => ({
           videoId: v.contentDetails.videoId,
@@ -989,9 +997,10 @@ async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, t
       let commentReactivity = 0;
       let categoryMix = null;
       let recentVideos = [];
+      let channelTagSample = []; // 채널 레벨 특징 요약에 참고할 태그/주제 샘플
       if (videos.length) {
         const videosData = await ytFetch("videos", {
-          id: videos.map(v => v.videoId).join(","), part: "statistics,snippet",
+          id: videos.map(v => v.videoId).join(","), part: "statistics,snippet,topicDetails",
         });
         const items = videosData.items || [];
         const rates = items.map(v => {
@@ -1007,13 +1016,20 @@ async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, t
           thumbnail: v.snippet?.thumbnails?.medium?.url || v.snippet?.thumbnails?.default?.url || "",
         }));
 
-        // 최근 영상 제목들을 키워드로 분류해서 채널의 콘텐츠 비중을 근사 계산
-        // (실제 영상 내용을 시청/분석한 게 아니라 제목 텍스트 기반 근사치입니다)
+        // 영상별로 제목 + 크리에이터가 직접 단 태그 + 유튜브 공식 카테고리 힌트 + 유튜브가 매핑한 주제(topicDetails)를
+        // 합쳐서 분류 정확도를 높임 (제목 텍스트 하나에만 의존하지 않도록)
         const tagCounts = {};
         for (const v of items) {
-          const vTitle = (v.snippet?.title || "").toLowerCase();
+          const vTags = (v.snippet?.tags || []).join(" ");
+          const catHint = YT_CATEGORY_HINTS[v.snippet?.categoryId] || "";
+          const topics = (v.topicDetails?.topicCategories || [])
+            .map(url => decodeURIComponent(url.split("/").pop() || "").replace(/_/g, " "))
+            .join(" ");
+          const vText = `${v.snippet?.title || ""} ${vTags} ${catHint} ${topics}`.toLowerCase();
+          if (vTags) channelTagSample.push(...vTags.split(" ").filter(Boolean).slice(0, 3));
+
           for (const [tag, keywords] of Object.entries(CONTENT_TYPE_KEYWORDS)) {
-            if (keywords.some(kw => vTitle.includes(kw.toLowerCase()))) {
+            if (keywords.some(kw => vText.includes(kw.toLowerCase()))) {
               tagCounts[tag] = (tagCounts[tag] || 0) + 1;
             }
           }
@@ -1046,7 +1062,7 @@ async function fetchYoutubeByKeyword(keyword, minSubs, maxSubs, minEngagement, t
         healthy_account: ytIsHealthy(subs, commentReactivity),
         email: emailMatch ? emailMatch[0] : null,
         instagram_handle: igMatch ? igMatch[1] : null,
-        content_type: inferContentType(snippet.title, description),
+        content_type: inferContentType(snippet.title, description, channelTagSample.join(" ")),
         category_mix: categoryMix || { [keyword]: 100 },
         recent_videos: recentVideos,
         keyword,
